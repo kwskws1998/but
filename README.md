@@ -2,16 +2,64 @@
 
 To run the project (Linux):
 
-1. Create and activate a Python 3.11.8 virtual environment.
+1. Create and activate a Python 3.11 or 3.12 virtual environment.
 2. Install the complete dependency manifest:
 
 ```bash
-pip install -r requirements.txt
+python -m pip install --upgrade pip wheel
+python -m pip install "setuptools<82"
+python -m pip install -r requirements.txt
 ```
 
 `requirements.txt` includes the pinned tokenizer-aligner commit and the Linux
-`bitsandbytes` dependency used by the default quantized run. No download or
-setup shell script is required after the dependencies are installed.
+`bitsandbytes` dependency used by the default quantized run. CUDA runtime
+packages are resolved by the pinned PyTorch wheel instead of being pinned
+independently. No download or setup shell script is required after the
+dependencies are installed.
+
+The pinned PyTorch 2.12 Linux wheel uses CUDA 13.0, and the pinned
+`bitsandbytes` wheel includes `sm_120` kernels for RTX 50-series GPUs. Do not
+downgrade these packages to PyTorch 2.2 or `bitsandbytes` 0.43 on an RTX 5090.
+When repairing an existing environment that already contains the old pins,
+install the complete compatible set together so pip does not upgrade NumPy or
+fsspec beyond the versions required by TRL and Datasets:
+
+```bash
+python -m pip install --upgrade "torch==2.12.0" "bitsandbytes==0.49.0" "sympy==1.14.0" "rich==13.9.4" "numpy==1.26.4" "fsspec==2024.2.0"
+```
+
+Verify the CUDA and 4-bit paths before starting a full run:
+
+```bash
+python -c "import torch, bitsandbytes as bnb; x=torch.randn(64, 64, device='cuda', dtype=torch.float16); q,s=bnb.functional.quantize_4bit(x, quant_type='nf4'); y=bnb.functional.dequantize_4bit(q, s); print('torch', torch.__version__, 'CUDA', torch.version.cuda, 'GPU', torch.cuda.get_device_name(0), 'bnb', bnb.__version__, 'finite', bool(torch.isfinite(y).all()))"
+python -c "import main; print('main import OK')"
+```
+
+### Hugging Face and Weights & Biases access
+
+Request access to the gated
+[Meta-Llama-3-8B repository](https://huggingface.co/meta-llama/Meta-Llama-3-8B)
+in a browser while signed in to the same Hugging Face account that will be
+used on the training machine. Hugging Face does not support submitting a
+gated-model access request from Python or the CLI.
+
+After access is granted, authenticate the training machine:
+
+```bash
+python -c "from huggingface_hub import login; login()"
+python -c "import wandb; wandb.login()"
+```
+
+The first command asks for a Hugging Face user access token. The second asks
+for a Weights & Biases API key. Do not put either secret directly in the
+command or commit it to the repository.
+
+Verify both the account login and gated-model access before training:
+
+```bash
+python -c "from huggingface_hub import HfApi; print(HfApi().whoami()['name'])"
+python -c "from huggingface_hub import hf_hub_download; print(hf_hub_download(repo_id='meta-llama/Meta-Llama-3-8B', filename='config.json'))"
+```
 
 ### Automatic downloads
 
@@ -143,3 +191,12 @@ python main.py \
 
 Neither the ET model version nor the GazeConcat condition overrides these
 command-line values.
+
+### Experiment output paths
+
+Training outputs default to the repository-local `models_save/` directory.
+Use `--output_root /path/to/output` to select another location. Each run uses
+a compact readable identifier plus a digest of the complete resolved training
+configuration, so every path component remains below the Linux filename limit.
+The full resolved configuration, experiment digest, and output path are
+written to `args.json` before model or dataset loading begins.

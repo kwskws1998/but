@@ -1,11 +1,28 @@
 import os
 import sys
 import pathlib
+
+os.environ.setdefault(
+    "PYTORCH_CUDA_ALLOC_CONF",
+    "expandable_segments:True",
+)
+
 import torch
 import argparse
 import json
 from pdb import set_trace as bp
 
+from utils.runtime_compat import validate_cuda_runtime
+from utils.run_paths import (
+    RUN_NAMING_SCHEMA_VERSION,
+    allocate_unique_folder_name,
+    create_folder_name,
+    experiment_digest,
+    get_unique_folder_name,
+)
+
+
+validate_cuda_runtime(torch)
 
 sys.path.append("../..")
 path = str(pathlib.Path(__file__).parent.resolve())
@@ -28,111 +45,9 @@ from utils.training_limits import (
     add_input_limit_arguments,
     resolve_input_limits,
 )
-
+from utils.training_schedule import DEFAULT_WARMUP_RATIO
 
 from transformers import set_seed
-
-import os
-
-
-
-
-def get_unique_folder_name(
-    base_folder,
-    model_name,
-    dataset_name,
-    concat,
-    use_softprompt,
-    batch_size,
-    train_epochs,
-    gradient_acum_steps,
-    logging_steps,
-    learning_rate,
-    lr_scheduler_type,
-    min_lr_ratio,
-    weight_decay,
-    seed,
-    fixations_model_version,
-    features_used,
-    use_asym_gaussian_redistributor,
-    et2_gaze_concat_condition,
-    fp_dropout,
-):
-    # Start with the original folder name
-    folder_name = create_folder_name(
-        model_name,
-        dataset_name,
-        concat,
-        use_softprompt,
-        batch_size,
-        train_epochs,
-        gradient_acum_steps,
-        logging_steps,
-        learning_rate,
-        lr_scheduler_type,
-        min_lr_ratio,
-        weight_decay,
-        seed,
-        fixations_model_version,
-        features_used,
-        use_asym_gaussian_redistributor,
-        et2_gaze_concat_condition,
-        fp_dropout,
-    )
-    folder_path = os.path.join(base_folder, folder_name)
-    # Initialize version number
-    version = 1
-    # Check if the folder exists and add version suffix until it doesn't
-    while os.path.exists(folder_path):
-        new_folder_name = f"{folder_name}_v{version}"
-        folder_path = os.path.join(base_folder, new_folder_name)
-        version += 1
-
-    return os.path.join(base_folder, folder_name), folder_path
-
-
-def create_folder_name(
-    model_name,
-    dataset_name,
-    concat,
-    use_softprompt,
-    batch_size,
-    train_epochs,
-    gradient_acum_steps,
-    logging_steps,
-    learning_rate,
-    lr_scheduler_type,
-    min_lr_ratio,
-    weight_decay,
-    seed,
-    fixations_model_version,
-    features_used,
-    use_asym_gaussian_redistributor,
-    et2_gaze_concat_condition,
-    fp_dropout,
-):
-    # dataset_name, model name, concat and use_softpormpt i want to be folders
-    folder_name = f"{model_name.replace('/', '-')}/{dataset_name.replace('/', '-')}/{concat}/{use_softprompt}"
-
-    add_info = f"_batch_size_{batch_size}"
-    add_info += f"_train_epochs_{train_epochs}"
-    add_info += f"_gradient_acum_steps_{gradient_acum_steps}"
-    add_info += f"_logging_steps_{logging_steps}"
-    add_info += f"_learning_rate_{learning_rate}"
-    add_info += f"_lr_scheduler_type_{lr_scheduler_type}"
-    add_info += f"_min_lr_ratio_{min_lr_ratio}"
-    add_info += f"_weight_decay_{weight_decay}"
-    add_info += f"_seed_{seed}"
-    add_info += f"_fmv_{fixations_model_version}"
-    add_info += f"_features_{''.join(str(value) for value in features_used)}"
-    add_info += (
-        f"_redistributor_{str(use_asym_gaussian_redistributor).lower()}"
-    )
-    if et2_gaze_concat_condition is not None:
-        add_info += f"_et2_{et2_gaze_concat_condition}"
-    add_info += f"_fp_dropout_{fp_dropout[0]}_{fp_dropout[1]}"
-
-    return folder_name + add_info
 
 
 def create_model_name(model_name, dataset_name, concat, use_softprompt):
@@ -140,10 +55,6 @@ def create_model_name(model_name, dataset_name, concat, use_softprompt):
     if concat and use_softprompt:
         model_name += "-concateye"
     return model_name
-
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
-os.environ["CTORCH_USE_CUDA_DSA"] = "1"
 
 
 if __name__ == "__main__":
@@ -205,9 +116,15 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--gradient_checkpointing", help="gradient_checkpointing", default=True
-    )  
+    )
     parser.add_argument("--logging_steps", type=int, help="logging_steps", default=50)
     parser.add_argument("--train_samples", type=int, help="train_samples", default=0)
+    parser.add_argument(
+        "--output_root",
+        type=str,
+        default=None,
+        help="directory in which experiment outputs are created",
+    )
     parser.add_argument("--freeze", help="freeze", default=0)
     parser.add_argument("--mode", help="train or evaluate", default="train")
     parser.add_argument("--fp_dropout", help="train or evaluate", default="0.1,0.3")
@@ -218,8 +135,10 @@ if __name__ == "__main__":
     parser.add_argument("--init_sigma_left", type=float, default=1.0)
     parser.add_argument("--init_sigma_right", type=float, default=1.0)
     parser.add_argument("--sigma_lr", type=float, default=5e-2)
-    parser.add_argument("--sigma_lr_scheduler_type", type=str, default="cosine_with_min_lr")
-    parser.add_argument("--sigma_learnable", help="whether sigma params are trainable", default=True)
+    parser.add_argument("--sigma_lr_scheduler_type", type=str, default="cosine")
+    parser.add_argument(
+        "--sigma_learnable", help="whether sigma params are trainable", default=True
+    )
     parser.add_argument(
         "--use_asym_gaussian_redistributor",
         help="apply asymmetric Gaussian redistributor to fixations",
@@ -278,7 +197,9 @@ if __name__ == "__main__":
         max_length=args.max_length,
         max_tokens=args.max_tokens,
     )
-    use_asym_gaussian_redistributor = str(args.use_asym_gaussian_redistributor).lower() == "true"
+    use_asym_gaussian_redistributor = (
+        str(args.use_asym_gaussian_redistributor).lower() == "true"
+    )
     sigma_learnable = str(args.sigma_learnable).lower() == "true"
     et2_gaze_concat_condition = resolve_et2_gaze_concat_condition(
         fixations_model_version=fixations_model_version,
@@ -297,6 +218,51 @@ if __name__ == "__main__":
     args.et2_gaze_concat_condition = et2_gaze_concat_condition
     args.use_asym_gaussian_redistributor = use_asym_gaussian_redistributor
     args.sigma_learnable = sigma_learnable
+    resolved_run_config = {
+        "batch_size": batch_size,
+        "concat": concat,
+        "dataset_name": dataset_name,
+        "dataset_split": dataset_split,
+        "et2_gaze_concat_condition": et2_gaze_concat_condition,
+        "features_used": features_used,
+        "fixations_model_version": fixations_model_version,
+        "fold": fold,
+        "fp_dropout": fp_dropout,
+        "freeze": freeze,
+        "freeze_layer": freeze_layer,
+        "gradient_acum_steps": gradient_acum_steps,
+        "gradient_checkpointing": gradient_checkpointing,
+        "grid_search": grid_search,
+        "init_sigma_left": float(args.init_sigma_left),
+        "init_sigma_right": float(args.init_sigma_right),
+        "input_layer": input_layer,
+        "learning_rate": learning_rate,
+        "logging_steps": logging_steps,
+        "lora_alpha": 32,
+        "lora_dropout": 0.1,
+        "lora_r": 8,
+        "lr_scheduler_type": lr_scheduler_type,
+        "max_length": max_length,
+        "max_tokens": max_tokens,
+        "min_lr_ratio": min_lr_ratio,
+        "model_name": model_name,
+        "noise_factor": noise_factor,
+        "optimizer": "AdamW",
+        "optimizer_betas": [0.9, 0.999],
+        "seed": seed,
+        "sigma_learnable": sigma_learnable,
+        "sigma_lr": float(args.sigma_lr),
+        "sigma_lr_scheduler_type": args.sigma_lr_scheduler_type,
+        "subsample_percentage": subsample_percentage,
+        "train_epochs": train_epochs,
+        "train_samples": train_samples,
+        "use_asym_gaussian_redistributor": (use_asym_gaussian_redistributor),
+        "use_lora": use_lora,
+        "use_quantization": use_quantization,
+        "use_softprompt": use_softprompt,
+        "warmup_ratio": DEFAULT_WARMUP_RATIO,
+        "weight_decay": weight_decay,
+    }
 
     # create folder name with all args
     name = create_model_name(model_name, dataset_name, concat, use_softprompt)
@@ -339,8 +305,13 @@ if __name__ == "__main__":
         use_asym_gaussian_redistributor=use_asym_gaussian_redistributor,
         et2_gaze_concat_condition=et2_gaze_concat_condition,
     )
-    folder_name_path, folder_name_unique_path = get_unique_folder_name(
-        str(pathlib.Path(__file__).parent.resolve().parent.resolve()) + "/models_save/",
+    output_root = (
+        pathlib.Path(args.output_root).expanduser().resolve()
+        if args.output_root is not None
+        else pathlib.Path(__file__).parent.resolve() / "models_save"
+    )
+    folder_arguments = (
+        str(output_root),
         model_name,
         dataset_name,
         concat,
@@ -359,8 +330,28 @@ if __name__ == "__main__":
         use_asym_gaussian_redistributor,
         et2_gaze_concat_condition,
         fp_dropout,
+        resolved_run_config,
     )
     if mode == "train":
+        (
+            folder_name_path,
+            folder_name_unique_path,
+        ) = allocate_unique_folder_name(*folder_arguments)
+    else:
+        folder_name_path, folder_name_unique_path = get_unique_folder_name(
+            *folder_arguments
+        )
+    if mode == "train":
+        args_dict = vars(args)
+        args_dict.update(resolved_run_config)
+        args_dict["_experiment_hash"] = experiment_digest(resolved_run_config)
+        args_dict["_naming_schema_version"] = RUN_NAMING_SCHEMA_VERSION
+        args_dict["_output_dir"] = folder_name_unique_path
+        args_dict["_resolved_config"] = resolved_run_config
+        args_dict["_run_slug"] = pathlib.Path(folder_name_unique_path).name
+        with open(folder_name_unique_path + "/args.json", "w") as f:
+            json.dump(args_dict, f, indent=4)
+
         reward_trainer.train_model(
             train_samples=train_samples, save_folder=folder_name_unique_path
         )
@@ -369,15 +360,10 @@ if __name__ == "__main__":
         reward_trainer.trainer.save_model(folder_name_unique_path)
 
         reward_trainer.model.tokenizer.save_pretrained(folder_name_unique_path)
-        args_dict = vars(args)
-        # Save the arguments to a file (e.g., args.json)
-        with open(folder_name_unique_path + "/args.json", "w") as f:
-            json.dump(args_dict, f, indent=4)
         results = reward_trainer.eval_model_v2()
         with open(folder_name_unique_path + "/results_dataset_test.json", "w") as f:
             json.dump(results, f, indent=4)
         print("results_dataset_test", results)
-
 
     else:
         results = reward_trainer.eval_model(folder_name=folder_name_path)

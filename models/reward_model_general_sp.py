@@ -30,6 +30,7 @@ from transformers import (
 from transformers.modeling_outputs import (
     SequenceClassifierOutputWithPast,
 )
+from transformers.modeling_utils import PreTrainedModel
 
 
 from typing import (
@@ -39,6 +40,49 @@ from reward_model_base import MyRewardBase
 
 T = TypeVar("T", bound="Module")
 import re
+
+
+def _adopt_pretrained_model_state(target, pretrained_model):
+    """Transfer a loaded Hugging Face model into the dynamic wrapper without reinitializing it."""
+    PreTrainedModel.__init__(target, pretrained_model.config)
+    target.num_labels = pretrained_model.num_labels
+    target.model = pretrained_model.model
+    target.score = pretrained_model.score
+    load_metadata_names = (
+        "is_quantized",
+        "quantization_method",
+        "is_loaded_in_4bit",
+        "is_loaded_in_8bit",
+        "hf_quantizer",
+        "hf_device_map",
+        "_is_quantized_training_enabled",
+    )
+    for metadata_name in load_metadata_names:
+        if metadata_name in pretrained_model.__dict__:
+            setattr(
+                target,
+                metadata_name,
+                pretrained_model.__dict__[metadata_name],
+            )
+
+
+def _rightmost_unmasked_indices(attention_mask, logits):
+    """Return the rightmost valid token index for each row, supporting left or right padding."""
+    if attention_mask.ndim != 2:
+        raise ValueError(
+            f"attention_mask must be rank 2, received shape {tuple(attention_mask.shape)}"
+        )
+    if tuple(attention_mask.shape) != tuple(logits.shape[:2]):
+        raise ValueError(
+            "attention_mask and token logits must have the same batch and sequence "
+            f"dimensions, received {tuple(attention_mask.shape)} and "
+            f"{tuple(logits.shape[:2])}"
+        )
+    valid_tokens = attention_mask.to(device=logits.device).ne(0)
+    if not bool(valid_tokens.any(dim=-1).all()):
+        raise ValueError("Each input row must contain at least one unmasked token")
+    token_indices = torch.arange(logits.shape[1], device=logits.device)
+    return torch.where(valid_tokens, token_indices, -1).max(dim=-1).values
 
 
 def create_dynamic_class_RewardConcatenate(base_class=LlamaForSequenceClassification):
@@ -72,22 +116,25 @@ def create_dynamic_class_RewardConcatenate(base_class=LlamaForSequenceClassifica
                 *argv,
                 **karg,
             )
-            config = model.config
-            super(MyRewardConcatenate, self).__init__(
-                config,
-                *argv,
-                **karg,
-            )
+            if not isinstance(model, base_class):
+                raise TypeError(
+                    f"Loaded model type {type(model).__name__} is incompatible with "
+                    f"{base_class.__name__}"
+                )
+            _adopt_pretrained_model_state(self, model)
+            config = self.config
             MyRewardBase.__init__(
-                self, model_name=model_name, features_used=features_used,
-                init_sigma_left=init_sigma_left, init_sigma_right=init_sigma_right,
+                self,
+                model_name=model_name,
+                features_used=features_used,
+                init_sigma_left=init_sigma_left,
+                init_sigma_right=init_sigma_right,
                 use_asym_gaussian_redistributor=use_asym_gaussian_redistributor,
                 et2_gaze_concat_condition=et2_gaze_concat_condition,
             )
             end = datetime.now()
             print("Total time loading model", end.timestamp() - start.timestamp())
             self.model_name = model_name
-            self.model = model.model
             self.noise_factor = noise_factor
             self.fp_dropout = fp_dropout
             self.use_softprompt = use_softprompt
@@ -151,10 +198,18 @@ def create_dynamic_class_RewardConcatenate(base_class=LlamaForSequenceClassifica
                 config.num_labels - 1]`. If `config.num_labels == 1` a regression loss is computed (Mean-Square loss), If
                 `config.num_labels > 1` a classification loss is computed (Cross-Entropy).
             """
+            if input_ids is None:
+                raise ValueError(
+                    "input_ids are required because gaze features are derived from token IDs"
+                )
+            if inputs_embeds is not None:
+                raise ValueError(
+                    "Pass input_ids only; this model constructs inputs_embeds internally"
+                )
             embedding_device = self.model.embed_tokens.weight.device
-            inputs_embeds = self.model.embed_tokens(
-                input_ids.to(embedding_device)
-            )
+            inputs_embeds = self.model.embed_tokens(input_ids.to(embedding_device))
+            if attention_mask is None:
+                attention_mask = torch.ones_like(input_ids)
             attention_mask = attention_mask.to(embedding_device)
             if self.use_softprompt:
                 # TODO: change code so the fixations use the chached code
@@ -220,9 +275,11 @@ def create_dynamic_class_RewardConcatenate(base_class=LlamaForSequenceClassifica
                 del separator_attention_mask, fixations_attention
             else:
                 inputs_embeds = inputs_embeds.float()
-            # new_emebding = embedings + self.fixations_embedding_projector(fixations)
 
-            output = super().forward(
+            return_dict = (
+                return_dict if return_dict is not None else self.config.use_return_dict
+            )
+            transformer_outputs = self.model(
                 input_ids=None,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
@@ -233,7 +290,50 @@ def create_dynamic_class_RewardConcatenate(base_class=LlamaForSequenceClassifica
                 output_hidden_states=output_hidden_states,
                 return_dict=return_dict,
             )
+            hidden_states = transformer_outputs[0]
+            token_logits = self.score(hidden_states)
+            sequence_indices = _rightmost_unmasked_indices(attention_mask, token_logits)
+            batch_indices = torch.arange(
+                token_logits.shape[0], device=token_logits.device
+            )
+            pooled_logits = token_logits[batch_indices, sequence_indices]
+
+            loss = None
+            if labels is not None:
+                labels = labels.to(token_logits.device)
+                if self.config.problem_type is None:
+                    if self.num_labels == 1:
+                        self.config.problem_type = "regression"
+                    elif self.num_labels > 1 and labels.dtype in (
+                        torch.long,
+                        torch.int,
+                    ):
+                        self.config.problem_type = "single_label_classification"
+                    else:
+                        self.config.problem_type = "multi_label_classification"
+                if self.config.problem_type == "regression":
+                    if self.num_labels == 1:
+                        loss = nn.MSELoss()(pooled_logits.squeeze(), labels.squeeze())
+                    else:
+                        loss = nn.MSELoss()(pooled_logits, labels)
+                elif self.config.problem_type == "single_label_classification":
+                    loss = nn.CrossEntropyLoss()(
+                        pooled_logits.view(-1, self.num_labels),
+                        labels.view(-1),
+                    )
+                elif self.config.problem_type == "multi_label_classification":
+                    loss = nn.BCEWithLogitsLoss()(pooled_logits, labels)
+
+            if not return_dict:
+                output = (pooled_logits,) + transformer_outputs[1:]
+                return ((loss,) + output) if loss is not None else output
             torch.cuda.empty_cache()
-            return output
+            return SequenceClassifierOutputWithPast(
+                loss=loss,
+                logits=pooled_logits,
+                past_key_values=transformer_outputs.past_key_values,
+                hidden_states=transformer_outputs.hidden_states,
+                attentions=transformer_outputs.attentions,
+            )
 
     return MyRewardConcatenate

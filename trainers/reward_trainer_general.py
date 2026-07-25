@@ -32,6 +32,10 @@ from utils.training_limits import (
     DEFAULT_MAX_TOKENS,
     resolve_input_limits,
 )
+from utils.training_schedule import (
+    DEFAULT_WARMUP_RATIO,
+    optimizer_steps_for_trainer,
+)
 
 
 def wandb_hp_space(trial):
@@ -141,7 +145,7 @@ def model_init_func(
 
     elif hasattr(model, "asym_gaussian_redistributor"):
         print("asym_gaussian_redistributor found in model")
-        
+
     return model
 
 
@@ -203,7 +207,7 @@ class RewardTrainerConstructorGeneral(RewardTrainerConstructor):
         max_tokens=DEFAULT_MAX_TOKENS,
         init_sigma_left=1.0,
         init_sigma_right=1.0,
-        sigma_lr=5e-3,
+        sigma_lr=5e-2,
         sigma_lr_scheduler_type="cosine",
         sigma_learnable=True,
         use_asym_gaussian_redistributor=True,
@@ -280,15 +284,15 @@ class RewardTrainerConstructorGeneral(RewardTrainerConstructor):
             f"_redistributor{str(self.use_asym_gaussian_redistributor).lower()}"
         )
         if self.et2_gaze_concat_condition is not None:
-            self.model_name_log += (
-                f"_et2_{self.et2_gaze_concat_condition}"
-            )
+            self.model_name_log += f"_et2_{self.et2_gaze_concat_condition}"
         print("=" * 25)
         print(f"RewardTrainerConstructorGeneral initialized")
         print(f"Configured sigma_lr = {sigma_lr}, sigma_learnable = {sigma_learnable}")
         print("=" * 25)
 
-    def train_model(self, train_samples=0, fold=None, save_folder="./reward_model", callbacks=None):
+    def train_model(
+        self, train_samples=0, fold=None, save_folder="./reward_model", callbacks=None
+    ):
         if self.use_quantization:
             print("Config quantization")
             self.bnb_config = self.config_quantization()
@@ -403,7 +407,9 @@ class RewardTrainerConstructorGeneral(RewardTrainerConstructor):
         redistributor = getattr(inner, "asym_gaussian_redistributor", None)
         if redistributor is not None:
             if hasattr(redistributor, "modules_to_save"):
-                redistributor = redistributor.modules_to_save[redistributor._active_adapter]
+                redistributor = redistributor.modules_to_save[
+                    redistributor._active_adapter
+                ]
             sigma_left = redistributor.sigma_left.item()
             sigma_right = redistributor.sigma_right.item()
             results["eval_sigma_left"] = sigma_left
@@ -411,12 +417,14 @@ class RewardTrainerConstructorGeneral(RewardTrainerConstructor):
         else:
             sigma_left = sigma_right = None
 
-        wandb.log({
-            "final_eval/loss": results.get("eval_loss"),
-            "final_eval/accuracy": results.get("eval_accuracy"),
-            "final_eval/sigma_left": sigma_left,
-            "final_eval/sigma_right": sigma_right,
-        })
+        wandb.log(
+            {
+                "final_eval/loss": results.get("eval_loss"),
+                "final_eval/accuracy": results.get("eval_accuracy"),
+                "final_eval/sigma_left": sigma_left,
+                "final_eval/sigma_right": sigma_right,
+            }
+        )
 
         return results
 
@@ -447,6 +455,7 @@ class RewardTrainerConstructorGeneral(RewardTrainerConstructor):
             "logging_dir": "./logs",
             "report_to": "wandb",
             "per_device_train_batch_size": self.batch_size,
+            "per_device_eval_batch_size": self.batch_size,
             "gradient_accumulation_steps": self.gradient_acum_steps,
             "gradient_checkpointing": self.gradient_checkpointing,
             "evaluation_strategy": "steps",
@@ -456,7 +465,7 @@ class RewardTrainerConstructorGeneral(RewardTrainerConstructor):
             "max_length": self.max_length,
             "learning_rate": self.learning_rate,
             "weight_decay": self.weight_decay,
-            "warmup_ratio": 0.02,
+            "warmup_ratio": DEFAULT_WARMUP_RATIO,
             "seed": self.seed,
         }
 
@@ -509,17 +518,14 @@ class RewardTrainerConstructorGeneral(RewardTrainerConstructor):
                 init_sigma_left=self.init_sigma_left,
                 init_sigma_right=self.init_sigma_right,
                 sigma_learnable=self.sigma_learnable,
-                use_asym_gaussian_redistributor=(
-                    self.use_asym_gaussian_redistributor
-                ),
-                et2_gaze_concat_condition=(
-                    self.et2_gaze_concat_condition
-                ),
+                use_asym_gaussian_redistributor=(self.use_asym_gaussian_redistributor),
+                et2_gaze_concat_condition=(self.et2_gaze_concat_condition),
             )
 
             def model_init(trial=None):
                 """Create a fresh model for one hyperparameter-search trial."""
                 return model_builder()
+
         else:
             model_init = None
 
@@ -594,9 +600,13 @@ class RewardTrainerConstructorGeneral(RewardTrainerConstructor):
 
         self.optimizer = torch.optim.AdamW(param_groups, betas=(0.9, 0.999))
 
-        num_training_steps = num_samples // self.batch_size * self.train_epochs
-
-        num_warmup_steps = int(num_training_steps * 0.01)
+        num_training_steps = optimizer_steps_for_trainer(
+            num_samples=num_samples,
+            batch_size=self.batch_size,
+            gradient_accumulation_steps=self.gradient_acum_steps,
+            train_epochs=self.train_epochs,
+        )
+        num_warmup_steps = int(num_training_steps * DEFAULT_WARMUP_RATIO)
 
         def base_lr_lambda(current_step):
             if current_step < num_warmup_steps:

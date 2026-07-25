@@ -109,3 +109,28 @@ def test_eval_propagates_cli_input_limits(monkeypatch):
         }
     ]
     assert results == {"eval_loss": 0.0}
+
+
+def test_training_args_use_configured_batch_size_for_evaluation():
+    trainer = SimpleNamespace(
+        batch_size=3,
+        gradient_acum_steps=8,
+        gradient_checkpointing=True,
+        logging_steps=50,
+        train_epochs=2,
+        model_name_log="test-run",
+        max_length=5000,
+        learning_rate=5e-5,
+        weight_decay=0.1,
+        seed=42,
+        lr_scheduler_type="cosine",
+        lr_scheduler_types_implemented=["cosine"],
+    )
+
+    training_args = trainer_module.RewardTrainerConstructorGeneral.set_training_args(
+        trainer,
+        save_folder="test-output",
+    )
+
+    assert training_args.per_device_train_batch_size == 3
+    assert training_args.per_device_eval_batch_size == 3
