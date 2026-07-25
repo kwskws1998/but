@@ -1,0 +1,45 @@
+# Operating-system and editor files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Python environments, caches, and build products
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Local credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Re-downloadable ET assets and model caches
+/artifacts/et_prediction_model_1/
+/cache/
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+pytorch_model*.bin
+adapter_model*.bin
+training_args.bin
+
+# Runtime caches and training outputs
+/buffer_train.lmdb/
+/checkpoints/
+/logs/
+/models_save/
+/outputs/
+/reward_model/
+/wandb/
