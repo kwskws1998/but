@@ -28,6 +28,10 @@ from cognitive_model_comparsion.download_assets import (
     download_assets,
     verify_assets,
 )
+from cognitive_model_comparsion.src.attention_profile import (
+    compare_attention_profiles,
+    write_attention_profile_outputs,
+)
 from cognitive_model_comparsion.src.audit_et2_provo import compare_et2_provo
 from cognitive_model_comparsion.src.audit_provo import audit_dataset
 from cognitive_model_comparsion.src.et1_inference import (
@@ -72,6 +76,7 @@ from cognitive_model_comparsion.src.prepare_provo import (
 from cognitive_model_comparsion.src.sigmas import (
     direct_sigma_record,
     extract_sigma_record,
+    sha256_file,
 )
 
 
@@ -954,6 +959,75 @@ def command_evaluate(args: argparse.Namespace) -> None:
     print(json.dumps(audit, indent=2, sort_keys=True))
 
 
+def command_compare_attention_profile(args: argparse.Namespace) -> None:
+    """Compare four token kernels with projected OB1 internal attention."""
+    validate_predict_sigma_arguments(args)
+    records = (
+        load_sigma_records(args.sigma_json)
+        if args.sigma_json
+        else extract_sigma_records(
+            args.checkpoint,
+            args.checkpoint_id,
+            args.sigma_prefix,
+            args.allow_initial_sigmas,
+        )
+        if args.checkpoint
+        else direct_sigma_records_from_args(args)
+    )
+    if len(records) != 1:
+        raise ValueError(
+            "compare-attention-profile requires exactly one sigma record"
+        )
+    processed_dir = resolved_path(
+        args.processed_dir,
+        default_processed_dir(args.corpus),
+    )
+    passages, _ = ensure_prepared(processed_dir, args.corpus)
+    token_path = args.et1_dir / "et1_token_values.csv"
+    fixation_path = args.ob1_dir / "ob1_fixations.csv"
+    if not token_path.is_file():
+        raise FileNotFoundError(f"Missing ET1 token table: {token_path}")
+    if not fixation_path.is_file():
+        raise FileNotFoundError(f"Missing OB1 fixation table: {fixation_path}")
+    attention_skews = tuple(
+        args.ob1_attention_skew
+        if args.ob1_attention_skew
+        else (3.0, 4.0)
+    )
+    artifacts = compare_attention_profiles(
+        passages,
+        pd.read_csv(token_path),
+        pd.read_csv(fixation_path),
+        records[0],
+        attention_skews=attention_skews,
+        fixation_weighting=args.fixation_weighting,
+        profile_component=args.profile_component,
+        bootstrap_samples=args.bootstrap_samples,
+        seed=args.seed,
+    )
+    artifacts["audit"].update(
+        {
+            "et1_token_values_path": str(token_path.resolve()),
+            "et1_token_values_sha256": sha256_file(token_path),
+            "ob1_fixations_path": str(fixation_path.resolve()),
+            "ob1_fixations_sha256": sha256_file(fixation_path),
+            "sigma_json_path": (
+                str(args.sigma_json.resolve())
+                if args.sigma_json is not None
+                else None
+            ),
+            "sigma_json_sha256": (
+                sha256_file(args.sigma_json)
+                if args.sigma_json is not None
+                else None
+            ),
+        }
+    )
+    write_attention_profile_outputs(args.output_dir, artifacts)
+    write_sigma_records(args.output_dir, records)
+    print(json.dumps(artifacts["audit"], indent=2, sort_keys=True))
+
+
 def command_run(args: argparse.Namespace) -> None:
     """Execute setup, inference, OB1, and both Human TRT evaluations."""
     validate_predict_sigma_arguments(args)
@@ -1244,6 +1318,38 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
     )
     evaluate.set_defaults(handler=command_evaluate)
+
+    attention = subparsers.add_parser("compare-attention-profile")
+    add_corpus_argument(attention)
+    add_common_processed_argument(attention)
+    add_sigma_arguments(attention, required=False)
+    add_direct_sigma_arguments(attention)
+    attention.add_argument("--sigma-json", type=Path)
+    attention.add_argument("--et1-dir", type=Path, required=True)
+    attention.add_argument("--ob1-dir", type=Path, required=True)
+    attention.add_argument("--output-dir", type=Path, required=True)
+    attention.add_argument(
+        "--ob1-attention-skew",
+        action="append",
+        type=float,
+    )
+    attention.add_argument(
+        "--fixation-weighting",
+        choices=("duration", "equal"),
+        default="duration",
+    )
+    attention.add_argument(
+        "--profile-component",
+        choices=("focused", "full"),
+        default="focused",
+    )
+    attention.add_argument(
+        "--bootstrap-samples",
+        type=int,
+        default=10000,
+    )
+    attention.add_argument("--seed", type=int, default=20260725)
+    attention.set_defaults(handler=command_compare_attention_profile)
 
     run = subparsers.add_parser("run")
     add_corpus_argument(run)

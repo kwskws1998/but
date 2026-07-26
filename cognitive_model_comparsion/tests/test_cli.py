@@ -48,6 +48,7 @@ def test_parser_exposes_all_required_subcommands():
         "predict-et1",
         "simulate-ob1",
         "evaluate",
+        "compare-attention-profile",
         "run",
     }
 
@@ -238,6 +239,23 @@ def test_parser_accepts_confirmed_direct_sigma_values():
                 "outputs/ob1",
                 "--output-dir",
                 "outputs/evaluation",
+            ],
+        ),
+        (
+            "compare-attention-profile",
+            [
+                "--sigma-left",
+                "0.41553",
+                "--sigma-right",
+                "3.46115",
+                "--checkpoint-id",
+                "oasst1_et1_trt",
+                "--et1-dir",
+                "outputs/et1",
+                "--ob1-dir",
+                "outputs/ob1",
+                "--output-dir",
+                "outputs/attention",
             ],
         ),
         (

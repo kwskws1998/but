@@ -6,7 +6,10 @@ import pytest
 
 from cognitive_model_comparsion.src.evaluate import (
     bootstrap_mean,
+    cognitive_contrast_table,
+    cognitive_result_table,
     evaluate_passages,
+    matched_asymmetry_contrast_table,
     merge_word_values,
     normalized_allocation,
     paired_contrasts,
@@ -15,6 +18,7 @@ from cognitive_model_comparsion.src.evaluate import (
     select_ob1_clean_passages,
     summarize_methods,
     summarize_methods_by_checkpoint,
+    write_evaluation_outputs,
 )
 
 
@@ -86,6 +90,20 @@ def test_identical_allocations_have_perfect_rank_and_zero_distance():
     assert metrics["ob1_spearman"] == pytest.approx(1.0)
     assert metrics["js_divergence"] == pytest.approx(0.0)
     assert metrics["word_order_wasserstein"] == pytest.approx(0.0)
+    assert metrics["ob1_js_divergence"] == pytest.approx(0.0)
+    assert metrics["ob1_word_order_wasserstein"] == pytest.approx(0.0)
+
+
+def test_ob1_distribution_metrics_use_ob1_instead_of_human_reference():
+    """OB1 distances are independent of the separate Human target."""
+    human = np.array([1.0, 0.0, 0.0])
+    ob1 = np.array([0.0, 1.0, 0.0])
+    metrics = passage_metric_values(human, ob1, ob1)
+
+    assert metrics["js_divergence"] == pytest.approx(1.0)
+    assert metrics["word_order_wasserstein"] == pytest.approx(0.5)
+    assert metrics["ob1_js_divergence"] == pytest.approx(0.0)
+    assert metrics["ob1_word_order_wasserstein"] == pytest.approx(0.0)
 
 
 def test_word_order_transport_distinguishes_adjacent_and_far_mass():
@@ -273,6 +291,8 @@ def test_lower_distance_is_encoded_as_positive_improvement():
                     "js_divergence": 0.4,
                     "word_order_wasserstein": 0.3,
                     "ob1_spearman": 0.2,
+                    "ob1_js_divergence": 0.4,
+                    "ob1_word_order_wasserstein": 0.3,
                 },
                 {
                     "checkpoint_id": "seed",
@@ -282,6 +302,8 @@ def test_lower_distance_is_encoded_as_positive_improvement():
                     "js_divergence": 0.3,
                     "word_order_wasserstein": 0.1,
                     "ob1_spearman": 0.25,
+                    "ob1_js_divergence": 0.1,
+                    "ob1_word_order_wasserstein": 0.05,
                 },
             ]
         )
@@ -295,7 +317,17 @@ def test_lower_distance_is_encoded_as_positive_improvement():
         "candidate == 'et1_asymmetric' "
         "and metric == 'word_order_wasserstein'"
     ).iloc[0]
+    ob1_js = contrasts.query(
+        "candidate == 'et1_asymmetric' "
+        "and metric == 'ob1_js_divergence'"
+    ).iloc[0]
+    ob1_word_order = contrasts.query(
+        "candidate == 'et1_asymmetric' "
+        "and metric == 'ob1_word_order_wasserstein'"
+    ).iloc[0]
     assert word_order_distance["mean_paired_improvement"] == pytest.approx(0.2)
+    assert ob1_js["mean_paired_improvement"] == pytest.approx(0.3)
+    assert ob1_word_order["mean_paired_improvement"] == pytest.approx(0.25)
     assert "permutation_p_two_sided" in contrasts
     assert "bootstrap_p_two_sided" not in contrasts
 
@@ -314,6 +346,8 @@ def test_asymmetric_is_directly_compared_with_symmetric():
                     "js_divergence": 0.5,
                     "word_order_wasserstein": 0.4,
                     "ob1_spearman": 0.1,
+                    "ob1_js_divergence": 0.5,
+                    "ob1_word_order_wasserstein": 0.4,
                 },
                 {
                     "checkpoint_id": "seed",
@@ -323,6 +357,8 @@ def test_asymmetric_is_directly_compared_with_symmetric():
                     "js_divergence": 0.4,
                     "word_order_wasserstein": 0.3,
                     "ob1_spearman": 0.2,
+                    "ob1_js_divergence": 0.4,
+                    "ob1_word_order_wasserstein": 0.3,
                 },
                 {
                     "checkpoint_id": "seed",
@@ -332,6 +368,8 @@ def test_asymmetric_is_directly_compared_with_symmetric():
                     "js_divergence": 0.2,
                     "word_order_wasserstein": 0.1,
                     "ob1_spearman": 0.4,
+                    "ob1_js_divergence": 0.2,
+                    "ob1_word_order_wasserstein": 0.1,
                 },
             ]
         )
@@ -364,6 +402,8 @@ def test_checkpoint_summary_keeps_each_rm_seed_separate():
                     "js_divergence": 0.1,
                     "word_order_wasserstein": 0.2,
                     "ob1_spearman": 0.3,
+                    "ob1_js_divergence": 0.15,
+                    "ob1_word_order_wasserstein": 0.25,
                 }
             )
     summary = summarize_methods_by_checkpoint(
@@ -398,6 +438,8 @@ def test_cluster_aware_summary_resamples_whole_clusters():
                 "js_divergence": value,
                 "word_order_wasserstein": value,
                 "ob1_spearman": value,
+                "ob1_js_divergence": value,
+                "ob1_word_order_wasserstein": value,
             }
         )
 
@@ -410,6 +452,201 @@ def test_cluster_aware_summary_resamples_whole_clusters():
 
     assert summary.loc[0, "clusters"] == 2
     assert summary.loc[0, "human_spearman"] == pytest.approx(0.5)
+
+
+def test_cognitive_tables_keep_only_et1_to_ob1_metrics():
+    """Reviewer-facing tables exclude Human metrics and OB1 self-alignment."""
+    method_summary = pd.DataFrame(
+        {
+            "method": [
+                "et1_raw",
+                "et1_symmetric",
+                "et1_asymmetric",
+                "ob1",
+            ],
+            "display_name": [
+                "ET1 raw",
+                "ET1 + symmetric",
+                "ET1 + learned asymmetric",
+                "OB1 baseline",
+            ],
+            "passages": [55, 55, 55, 55],
+            "ob1_spearman": [0.6, 0.7, 0.8, 1.0],
+            "ob1_spearman_ci_low": [0.5, 0.6, 0.7, 1.0],
+            "ob1_spearman_ci_high": [0.7, 0.8, 0.9, 1.0],
+            "ob1_js_divergence": [0.3, 0.2, 0.1, 0.0],
+            "ob1_js_divergence_ci_low": [0.2, 0.1, 0.05, 0.0],
+            "ob1_js_divergence_ci_high": [0.4, 0.3, 0.2, 0.0],
+            "ob1_word_order_wasserstein": [0.3, 0.2, 0.1, 0.0],
+            "ob1_word_order_wasserstein_ci_low": [
+                0.2,
+                0.1,
+                0.05,
+                0.0,
+            ],
+            "ob1_word_order_wasserstein_ci_high": [
+                0.4,
+                0.3,
+                0.2,
+                0.0,
+            ],
+            "human_spearman": [0.1, 0.2, 0.3, 0.4],
+        }
+    )
+    contrasts = pd.DataFrame(
+        {
+            "candidate": ["et1_asymmetric"] * 4,
+            "baseline": ["et1_raw"] * 4,
+            "metric": [
+                "human_spearman",
+                "ob1_spearman",
+                "ob1_js_divergence",
+                "ob1_word_order_wasserstein",
+            ],
+            "mean_paired_improvement": [0.1, 0.2, 0.3, 0.4],
+        }
+    )
+
+    summary = cognitive_result_table(method_summary)
+    cognitive_contrasts = cognitive_contrast_table(contrasts)
+
+    assert summary["method"].tolist() == [
+        "et1_raw",
+        "et1_symmetric",
+        "et1_asymmetric",
+    ]
+    assert set(summary["reference_model"]) == {"ob1_tvt"}
+    assert "human_spearman" not in summary
+    assert set(cognitive_contrasts["metric"]) == {
+        "ob1_spearman",
+        "ob1_js_divergence",
+        "ob1_word_order_wasserstein",
+    }
+    assert set(cognitive_contrasts["reference_model"]) == {"ob1_tvt"}
+
+
+def test_output_writer_emits_separate_cognitive_csvs(tmp_path):
+    """The standard writer always emits OB1-only summary and contrast files."""
+    passage_metrics = pd.DataFrame(
+        {
+            "method": ["et1_raw", "ob1"],
+            "passage_id_zero_based": [0, 0],
+            "human_spearman": [0.5, 0.6],
+        }
+    )
+    method_summary = pd.DataFrame(
+        {
+            "method": ["et1_raw", "ob1"],
+            "display_name": ["ET1 raw", "OB1 baseline"],
+            "passages": [55, 55],
+            "ob1_spearman": [0.6, 1.0],
+            "ob1_spearman_ci_low": [0.5, 1.0],
+            "ob1_spearman_ci_high": [0.7, 1.0],
+            "ob1_js_divergence": [0.2, 0.0],
+            "ob1_js_divergence_ci_low": [0.1, 0.0],
+            "ob1_js_divergence_ci_high": [0.3, 0.0],
+            "ob1_word_order_wasserstein": [0.1, 0.0],
+            "ob1_word_order_wasserstein_ci_low": [0.05, 0.0],
+            "ob1_word_order_wasserstein_ci_high": [0.15, 0.0],
+        }
+    )
+    contrasts = pd.DataFrame(
+        [
+            {
+                "candidate": "et1_asymmetric",
+                "baseline": "et1_raw",
+                "metric": "human_spearman",
+                "mean_paired_improvement": 0.1,
+            },
+            {
+                "candidate": "et1_asymmetric",
+                "baseline": "et1_raw",
+                "metric": "ob1_spearman",
+                "mean_paired_improvement": 0.2,
+            },
+            {
+                "candidate": "et1_asymmetric",
+                "baseline": "et1_symmetric",
+                "metric": "human_spearman",
+                "mean_paired_improvement": 0.3,
+            },
+            {
+                "candidate": "et1_asymmetric",
+                "baseline": "et1_symmetric",
+                "metric": "ob1_spearman",
+                "mean_paired_improvement": 0.4,
+            },
+        ]
+    )
+
+    write_evaluation_outputs(
+        tmp_path,
+        pd.DataFrame({"word": ["test"]}),
+        passage_metrics,
+        method_summary,
+        pd.DataFrame({"checkpoint_id": ["seed"]}),
+        contrasts,
+        {"status": "complete"},
+    )
+
+    cognitive_summary = pd.read_csv(
+        tmp_path / "cognitive_result_table.csv"
+    )
+    cognitive_contrasts = pd.read_csv(
+        tmp_path / "cognitive_bootstrap_summary.csv"
+    )
+    assert cognitive_summary["method"].tolist() == ["et1_raw"]
+    assert cognitive_summary["reference_model"].tolist() == ["ob1_tvt"]
+    assert cognitive_contrasts["metric"].tolist() == [
+        "ob1_spearman",
+        "ob1_spearman",
+    ]
+    assert cognitive_contrasts["reference_model"].tolist() == [
+        "ob1_tvt",
+        "ob1_tvt",
+    ]
+    matched = pd.read_csv(
+        tmp_path / "matched_asymmetry_contrasts.csv"
+    )
+    assert set(matched["baseline"]) == {"et1_symmetric"}
+    assert matched["human_reference"].tolist() == [True, False]
+    assert matched["ob1_reference"].tolist() == [False, True]
+
+
+def test_matched_asymmetry_table_selects_only_symmetric_baseline():
+    """The reviewer-facing matched table excludes raw-baseline contrasts."""
+    contrasts = pd.DataFrame(
+        {
+            "candidate": ["et1_asymmetric", "et1_asymmetric"],
+            "baseline": ["et1_raw", "et1_symmetric"],
+            "metric": ["human_spearman", "ob1_spearman"],
+            "mean_paired_improvement": [0.1, 0.2],
+        }
+    )
+
+    matched = matched_asymmetry_contrast_table(contrasts)
+
+    assert len(matched) == 1
+    assert matched.iloc[0]["baseline"] == "et1_symmetric"
+    assert matched.iloc[0]["ob1_reference"]
+
+
+def test_matched_asymmetry_table_is_empty_for_raw_only_run():
+    """Raw-only diagnostics keep a schema without inventing a contrast."""
+    contrasts = pd.DataFrame(
+        {
+            "candidate": ["et1_asymmetric"],
+            "baseline": ["et1_raw"],
+            "metric": ["ob1_spearman"],
+        }
+    )
+
+    matched = matched_asymmetry_contrast_table(contrasts)
+
+    assert matched.empty
+    assert "contrast_interpretation" in matched
+    assert "human_reference" in matched
+    assert "ob1_reference" in matched
 
 
 def test_conditional_human_missing_words_are_masked_for_every_array():

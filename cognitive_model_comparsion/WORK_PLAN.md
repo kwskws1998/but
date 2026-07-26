@@ -7,6 +7,12 @@ inference/alignment, fixed-sigma handling, symmetric/asymmetric redistribution,
 OB1 baseline wrapper, metrics, clustered paired inference, output tables,
 plots, manifests, and Python CLI are implemented.
 
+The current rebuttal route reuses the completed Provo 100-simulation output.
+It adds fixation-onset OB1-attention projection into native T5 relative-token
+space, four-kernel comparison, an asymmetric-versus-symmetric matched result,
+and an optional frozen fixed-OB1-prior RM baseline. The full OneStop run is
+suspended.
+
 Executed Provo gates include checksum verification, all 55 ET1 passages,
 same-seed and different-seed OB1 checks, all 55 OB1 passages for one reader,
 both redistribution paths with synthetic smoke widths and the effective
@@ -21,14 +27,17 @@ be described as completed OneStop alignment results.
 
 ## 1. Frozen research question
 
-Does the fixed OASST1-learned asymmetric redistribution change frozen ET1 TRT
-so that its word-level allocation on external text is closer to:
-
-1. participant-averaged Human TRT; and
-2. OB1-reader simulated total viewing time?
+Does the fixed OASST1-learned asymmetric redistribution show directional
+cognitive consistency with OB1's right-skewed visuospatial attention, relative
+to a width-matched symmetric kernel, while the original OASST1 reward result
+separately establishes downstream utility?
 
 Neither Provo nor OneStop Human TRT is used to fit ET1, the symmetric control,
 the learned sigmas, or OB1.
+
+Human TRT and OB1 TVT are external diagnostic correspondences. They are not
+used to claim that the learned kernel estimates a universal Human perceptual
+span or improves Human TRT prediction.
 
 ### Conditions
 
@@ -65,6 +74,7 @@ extract-sigmas
 predict-et1
 simulate-ob1
 evaluate
+compare-attention-profile
 run
 ```
 
@@ -280,13 +290,23 @@ Per passage:
   \(\rho(H,E)\), \(\rho(H,S)\), \(\rho(H,A)\), \(\rho(H,O)\);
 - OB1 consistency:
   \(\rho(E,O)\), \(\rho(S,O)\), \(\rho(A,O)\);
-- Jensen–Shannon divergence:
+- Human-referenced Jensen–Shannon divergence:
   \(JS(H,E)\), \(JS(H,S)\), \(JS(H,A)\), \(JS(H,O)\);
-- `word_order_wasserstein` over normalized word positions \(i/(n-1)\).
+- OB1-referenced Jensen–Shannon divergence:
+  \(JS(O,E)\), \(JS(O,S)\), \(JS(O,A)\);
+- Human-referenced `word_order_wasserstein` over normalized word positions
+  \(i/(n-1)\);
+- OB1-referenced `ob1_word_order_wasserstein` over the same positions.
 
 Word-order Wasserstein measures how far allocation mass must move along the
 ordered word axis. It is not fixation-coordinate distance and does not
 evaluate a scanpath.
+
+The reviewer-facing cognitive table excludes the trivial OB1 self-comparison
+and reports only ET1 raw, symmetric, and asymmetric against OB1 using
+`ob1_spearman`, `ob1_js_divergence`, and
+`ob1_word_order_wasserstein`. Human-referenced results remain a separate,
+stronger external-validation analysis.
 
 ## 11. Paired inference
 

@@ -13,6 +13,7 @@ import json
 from pdb import set_trace as bp
 
 from utils.runtime_compat import validate_cuda_runtime
+from utils.fixed_ob1_prior import load_fixed_ob1_prior
 from utils.run_paths import (
     RUN_NAMING_SCHEMA_VERSION,
     allocate_unique_folder_name,
@@ -140,6 +141,18 @@ if __name__ == "__main__":
         "--sigma_learnable", help="whether sigma params are trainable", default=True
     )
     parser.add_argument(
+        "--fixed_ob1_prior_json",
+        type=str,
+        default=None,
+        help="fixed_ob1_priors.json produced by the cognitive comparison",
+    )
+    parser.add_argument(
+        "--fixed_ob1_prior_skew",
+        type=float,
+        default=3.0,
+        help="OB1 attention-skew record selected from the fixed-prior JSON",
+    )
+    parser.add_argument(
         "--use_asym_gaussian_redistributor",
         help="apply asymmetric Gaussian redistributor to fixations",
         default=True,
@@ -155,6 +168,24 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+    fixed_ob1_prior = None
+    if args.fixed_ob1_prior_json is not None:
+        if (
+            float(args.init_sigma_left) != 1.0
+            or float(args.init_sigma_right) != 1.0
+        ):
+            raise ValueError(
+                "--fixed_ob1_prior_json cannot be combined with explicit "
+                "--init_sigma_left/--init_sigma_right values"
+            )
+        fixed_ob1_prior = load_fixed_ob1_prior(
+            args.fixed_ob1_prior_json,
+            args.fixed_ob1_prior_skew,
+        )
+        args.init_sigma_left = fixed_ob1_prior["initializer_sigma_left"]
+        args.init_sigma_right = fixed_ob1_prior["initializer_sigma_right"]
+        args.sigma_learnable = False
+        args.use_asym_gaussian_redistributor = True
     seed = int(args.seed)
     set_seed(seed)
     model_name = args.model_name
@@ -193,6 +224,15 @@ if __name__ == "__main__":
     fp_dropout = [float(element) for element in str(args.fp_dropout).split(",")]
     fixations_model_version = int(args.fixations_model_version)
     features_used = [int(element) for element in str(args.features_used).split(",")]
+    if fixed_ob1_prior is not None and (
+        fixations_model_version != 1
+        or not concat
+        or not use_softprompt
+    ):
+        raise ValueError(
+            "The fixed OB1 prior baseline requires ET1 GazeConcat: "
+            "--fixations_model_version 1 --concat true --use_softprompt true"
+        )
     max_length, max_tokens = resolve_input_limits(
         max_length=args.max_length,
         max_tokens=args.max_tokens,
@@ -226,6 +266,7 @@ if __name__ == "__main__":
         "et2_gaze_concat_condition": et2_gaze_concat_condition,
         "features_used": features_used,
         "fixations_model_version": fixations_model_version,
+        "fixed_ob1_prior": fixed_ob1_prior,
         "fold": fold,
         "fp_dropout": fp_dropout,
         "freeze": freeze,

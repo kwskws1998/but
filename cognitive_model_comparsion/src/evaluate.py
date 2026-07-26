@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -27,6 +28,20 @@ DISPLAY_NAMES = {
 OB1_CLEAN_PASSAGE_POLICY = (
     "exclude_passages_with_any_ob1_incompatible_word"
 )
+HUMAN_METRIC_DIRECTIONS = {
+    "human_spearman": "higher",
+    "js_divergence": "lower",
+    "word_order_wasserstein": "lower",
+}
+COGNITIVE_METRIC_DIRECTIONS = {
+    "ob1_spearman": "higher",
+    "ob1_js_divergence": "lower",
+    "ob1_word_order_wasserstein": "lower",
+}
+METRIC_DIRECTIONS = {
+    **HUMAN_METRIC_DIRECTIONS,
+    **COGNITIVE_METRIC_DIRECTIONS,
+}
 
 
 def normalized_allocation(values: np.ndarray) -> tuple[np.ndarray, int]:
@@ -106,6 +121,22 @@ def passage_metric_values(
             )
         ),
         "ob1_spearman": ob1_spearman,
+        "ob1_js_divergence": float(
+            jensenshannon(
+                ob1_distribution,
+                method_distribution,
+                base=2.0,
+            )
+            ** 2
+        ),
+        "ob1_word_order_wasserstein": float(
+            wasserstein_distance(
+                positions,
+                positions,
+                u_weights=ob1_distribution,
+                v_weights=method_distribution,
+            )
+        ),
         "human_clipped_values": human_clipped,
         "method_clipped_values": method_clipped,
         "ob1_clipped_values": ob1_clipped,
@@ -595,12 +626,7 @@ def summarize_methods(
     cluster_column: str | None = None,
 ) -> pd.DataFrame:
     """Average RM seeds within passage and bootstrap method-level means."""
-    metric_columns = [
-        "human_spearman",
-        "js_divergence",
-        "word_order_wasserstein",
-        "ob1_spearman",
-    ]
+    metric_columns = list(METRIC_DIRECTIONS)
     per_passage = (
         passage_metrics.groupby(
             ["method", "passage_id_zero_based"],
@@ -680,12 +706,7 @@ def paired_contrasts(
     cluster_column: str | None = None,
 ) -> pd.DataFrame:
     """Bootstrap paired intervals and sign-flip tests for improvements."""
-    metric_directions = {
-        "human_spearman": "higher",
-        "js_divergence": "lower",
-        "word_order_wasserstein": "lower",
-        "ob1_spearman": "higher",
-    }
+    metric_directions = METRIC_DIRECTIONS
     per_passage = (
         passage_metrics.groupby(
             ["method", "passage_id_zero_based"],
@@ -766,6 +787,123 @@ def paired_contrasts(
     return pd.DataFrame(records)
 
 
+def cognitive_result_table(method_summary: pd.DataFrame) -> pd.DataFrame:
+    """Select ET1-to-OB1 alignment estimates for the reviewer-facing table."""
+    identifier_columns = ["method", "display_name", "passages"]
+    if "clusters" in method_summary.columns:
+        identifier_columns.append("clusters")
+    metric_columns = []
+    for metric in COGNITIVE_METRIC_DIRECTIONS:
+        metric_columns.extend(
+            [metric, f"{metric}_ci_low", f"{metric}_ci_high"]
+        )
+    required = set(identifier_columns + metric_columns)
+    missing = sorted(required - set(method_summary.columns))
+    if missing:
+        raise ValueError(
+            "Cognitive result table requires columns: "
+            f"{missing}"
+        )
+    result = method_summary.loc[
+        method_summary["method"].ne("ob1"),
+        identifier_columns + metric_columns,
+    ].copy()
+    if result.empty:
+        raise ValueError(
+            "Cognitive result table contains no non-OB1 methods"
+        )
+    result.insert(2, "reference_model", "ob1_tvt")
+    method_order = {
+        method: index
+        for index, method in enumerate(METHOD_COLUMNS)
+        if method != "ob1"
+    }
+    result["_method_order"] = result["method"].map(method_order)
+    return (
+        result.sort_values("_method_order")
+        .drop(columns="_method_order")
+        .reset_index(drop=True)
+    )
+
+
+def cognitive_contrast_table(contrasts: pd.DataFrame) -> pd.DataFrame:
+    """Select paired ET1 contrasts whose reference allocation is OB1 TVT."""
+    if contrasts.empty:
+        columns = [
+            "candidate",
+            "baseline",
+            "reference_model",
+            "metric",
+            "positive_means_improvement",
+            "passages",
+            "mean_paired_improvement",
+            "ci_low",
+            "ci_high",
+            "permutation_p_two_sided",
+        ]
+        if "clusters" in contrasts.columns:
+            columns.insert(6, "clusters")
+        return pd.DataFrame(columns=columns)
+    if "metric" not in contrasts:
+        raise ValueError(
+            "Cognitive contrast table requires a metric column"
+        )
+    result = contrasts.loc[
+        contrasts["metric"].isin(COGNITIVE_METRIC_DIRECTIONS)
+    ].copy()
+    if result.empty:
+        raise ValueError(
+            "Cognitive contrast table contains no OB1-referenced metrics"
+        )
+    result.insert(2, "reference_model", "ob1_tvt")
+    return result.reset_index(drop=True)
+
+
+def matched_asymmetry_contrast_table(
+    contrasts: pd.DataFrame,
+) -> pd.DataFrame:
+    """Select the width-matched asymmetric-versus-symmetric contrast."""
+    required = {"candidate", "baseline", "metric"}
+    missing = sorted(required - set(contrasts.columns))
+    if missing:
+        raise ValueError(
+            f"Matched asymmetry table requires columns: {missing}"
+        )
+    result = contrasts.loc[
+        contrasts["candidate"].eq("et1_asymmetric")
+        & contrasts["baseline"].eq("et1_symmetric")
+    ].copy()
+    if result.empty:
+        columns = list(contrasts.columns)
+        for index, column in enumerate(
+            [
+                "contrast_interpretation",
+                "human_reference",
+                "ob1_reference",
+            ],
+            start=2,
+        ):
+            if column not in columns:
+                columns.insert(index, column)
+        return pd.DataFrame(columns=columns)
+    result.insert(
+        2,
+        "contrast_interpretation",
+        "asymmetry_effect_at_matched_rms_width",
+    )
+    result.insert(
+        3,
+        "human_reference",
+        result["metric"].isin(HUMAN_METRIC_DIRECTIONS),
+    )
+    result.insert(
+        4,
+        "ob1_reference",
+        result["metric"].isin(COGNITIVE_METRIC_DIRECTIONS),
+    )
+    return result.reset_index(drop=True)
+
+
 def plot_human_spearman(
     passage_metrics: pd.DataFrame,
     output_path: Path,
@@ -790,7 +928,12 @@ def plot_human_spearman(
         for method in methods
     ]
     figure, axis = plt.subplots(figsize=(9, 5.5))
-    axis.boxplot(values, labels=[DISPLAY_NAMES[item] for item in methods])
+    label_argument = (
+        {"tick_labels": [DISPLAY_NAMES[item] for item in methods]}
+        if matplotlib.__version_info__[:2] >= (3, 9)
+        else {"labels": [DISPLAY_NAMES[item] for item in methods]}
+    )
+    axis.boxplot(values, **label_argument)
     rng = np.random.default_rng(0)
     for index, method_values in enumerate(values, start=1):
         jitter = rng.uniform(-0.08, 0.08, size=len(method_values))
@@ -821,14 +964,29 @@ def write_evaluation_outputs(
 ) -> None:
     """Write machine-readable metrics, rebuttal table, plot, and audit."""
     output_dir.mkdir(parents=True, exist_ok=True)
+    cognitive_summary = cognitive_result_table(method_summary)
+    cognitive_contrasts = cognitive_contrast_table(contrasts)
+    matched_asymmetry = matched_asymmetry_contrast_table(contrasts)
     word_values.to_csv(output_dir / "word_level_values.csv", index=False)
     passage_metrics.to_csv(output_dir / "passage_metrics.csv", index=False)
     method_summary.to_csv(output_dir / "result_table.csv", index=False)
+    cognitive_summary.to_csv(
+        output_dir / "cognitive_result_table.csv",
+        index=False,
+    )
     checkpoint_summary.to_csv(
         output_dir / "seed_result_table.csv",
         index=False,
     )
     contrasts.to_csv(output_dir / "bootstrap_summary.csv", index=False)
+    cognitive_contrasts.to_csv(
+        output_dir / "cognitive_bootstrap_summary.csv",
+        index=False,
+    )
+    matched_asymmetry.to_csv(
+        output_dir / "matched_asymmetry_contrasts.csv",
+        index=False,
+    )
     plot_human_spearman(
         passage_metrics,
         output_dir / "human_spearman_by_passage.png",
