@@ -94,6 +94,7 @@ python cognitive_model_comparsion/main.py run \
   --checkpoint <seed-43-checkpoint> \
   --checkpoint-id seed43 \
   --seeds 0:100 \
+  --workers 32 \
   --bootstrap-samples 10000 \
   --seed 20260725 \
   --output-dir cognitive_model_comparsion/outputs/provo_ob1_full
@@ -300,6 +301,8 @@ Primary configuration:
 - passages: all 55 in each simulation;
 - virtual readers: 100;
 - seeds: fixed list `0..99`;
+- independent seeds run in fixed single-threaded worker processes, with the
+  worker count recorded and serial-equivalent merged output verified;
 - attention parameters: values from the pinned `parameters.py`;
 - output: every fixation with simulation, passage, word, duration, and
   saccade type.

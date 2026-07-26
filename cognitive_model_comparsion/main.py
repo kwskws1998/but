@@ -278,6 +278,7 @@ def run_simulate_ob1(
     seeds: list[int],
     n_trials: int,
     python_hash_seed: int,
+    workers: int,
 ) -> dict:
     """Prepare runtime, execute OB1, and aggregate word-level TVT."""
     validate_trial_count(n_trials)
@@ -300,6 +301,7 @@ def run_simulate_ob1(
         seeds=seeds,
         n_trials=n_trials,
         python_hash_seed=python_hash_seed,
+        workers=workers,
     )
     fixations = pd.read_csv(output_dir / "ob1_fixations.csv")
     eligible_words = words[words["passage_id_zero_based"] < n_trials].copy()
@@ -511,6 +513,7 @@ def command_simulate_ob1(args: argparse.Namespace) -> None:
         parse_seed_specification(args.seeds),
         args.n_trials,
         args.python_hash_seed,
+        args.workers,
     )
     print(json.dumps(audit, indent=2, sort_keys=True))
 
@@ -582,6 +585,7 @@ def command_run(args: argparse.Namespace) -> None:
         seeds,
         55,
         args.python_hash_seed,
+        args.workers,
     )
     run_evaluate(
         args.processed_dir,
@@ -690,6 +694,7 @@ def build_parser() -> argparse.ArgumentParser:
     ob1.add_argument("--seeds", default="0:100")
     ob1.add_argument("--n-trials", type=int, default=55)
     ob1.add_argument("--python-hash-seed", type=int, default=20260725)
+    ob1.add_argument("--workers", type=int, default=1)
     ob1.set_defaults(handler=command_simulate_ob1)
 
     evaluate = subparsers.add_parser("evaluate")
@@ -715,6 +720,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     run.add_argument("--seeds", default="0:100")
     run.add_argument("--python-hash-seed", type=int, default=20260725)
+    run.add_argument("--workers", type=int, default=1)
     run.add_argument("--bootstrap-samples", type=int, default=10000)
     run.add_argument("--seed", type=int, default=20260725)
     run.set_defaults(handler=command_run)

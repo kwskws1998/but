@@ -106,6 +106,8 @@ def main() -> None:
         raise ValueError("No OB1 seeds were provided")
     if os.environ.get("PYTHONHASHSEED") is None:
         raise RuntimeError("PYTHONHASHSEED must be fixed by the parent process")
+    torch.set_num_threads(1)
+    torch.set_num_interop_threads(1)
 
     sys.path.insert(0, str(vendor_src))
     os.chdir(runtime_dir / "src")

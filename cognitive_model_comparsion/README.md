@@ -42,11 +42,15 @@ No `.sh` file or `gdown` is used.
 From the repository root:
 
 ```bash
-python -m pip install -r requirements.txt
+python -m pip install -r cognitive_model_comparsion/requirements.txt
 python cognitive_model_comparsion/main.py setup
 python cognitive_model_comparsion/main.py audit
 python -m pytest -q cognitive_model_comparsion/tests
 ```
+
+The isolated requirements omit Llama-training-only packages such as
+`bitsandbytes`, `deepspeed`, `trl`, and `wandb`. The comparison does not load
+the Llama reward-model backbone.
 
 `setup` downloads every re-downloadable data/source asset, validates its exact
 size and SHA-256 digest, builds the canonical Provo tables, downloads the
@@ -96,6 +100,7 @@ python cognitive_model_comparsion/main.py run \
   --sigma-source-accuracy 0.76675 \
   --checkpoint-id oasst1_et1_learned_sigma \
   --seeds 0:100 \
+  --workers 32 \
   --bootstrap-samples 10000 \
   --seed 20260725 \
   --output-dir cognitive_model_comparsion/outputs/provo_ob1_full
@@ -152,6 +157,7 @@ python cognitive_model_comparsion/main.py predict-et1 \
 
 python cognitive_model_comparsion/main.py simulate-ob1 \
   --seeds 0:100 \
+  --workers 32 \
   --n-trials 55 \
   --output-dir cognitive_model_comparsion/outputs/ob1
 
@@ -180,13 +186,14 @@ The following were executed locally on the checked-out code:
 | ET1 token rows / unassigned non-special tokens | 3,715 / 0 |
 | OB1 same-seed repeat | exact |
 | OB1 different-seed fixation rows | 58 / 57 |
+| OB1 parallel vs serial fixation/word outputs | exact |
 | OB1 55-passage, one-reader runtime | 280.18 s |
 | OB1 fixation / word rows | 2,783 / 2,686 |
 | OB1 regression fixations / zero-TVT rows | 619 / 388 |
 | Synthetic redistribution mass checks | 110 / 110 passed |
 | Confirmed direct-sigma ET1 passages / word rows | 55 / 2,686 |
 | Confirmed direct-sigma mass checks | 110 / 110 passed |
-| Cognitive-comparison unit tests | 33 passed |
+| Cognitive-comparison unit tests | 35 passed |
 
 The redistribution integration smoke used explicitly synthetic widths
 `sigma_left=1.3` and `sigma_right=2.1` only to exercise all 55 passages,
@@ -197,6 +204,12 @@ The final learned-asymmetric manuscript result remains pending until the
 100-simulation OB1 run and Human evaluation finish. The direct effective
 values `0.41553/3.46115` have passed all 55 ET1 passages and redistribution
 mass checks, but those integration outputs are not manuscript metrics.
+
+`--workers` parallelizes independent OB1 seeds with one single-threaded
+subprocess per worker. A fresh runtime first executes one seed to populate the
+shared read-only OB1 caches, then launches the remaining chunks in parallel.
+The merged output restores the original requested seed and simulation order.
+Use `--workers 32` on a 40-core/80-thread host; GPU count does not affect OB1.
 
 ## Scope and interpretation
 

@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pandas as pd
@@ -117,12 +118,116 @@ def run_ob1_subprocess(
     seeds: list[int],
     n_trials: int = 55,
     python_hash_seed: int = 20260725,
+    workers: int = 1,
 ) -> None:
-    """Run the baseline worker in a fixed-hash Python subprocess."""
+    """Run fixed-hash OB1 workers and merge their deterministic outputs."""
     if not seeds:
         raise ValueError("At least one OB1 virtual-reader seed is required")
     if len(set(seeds)) != len(seeds):
         raise ValueError("OB1 virtual-reader seeds must be unique")
+    if workers < 1:
+        raise ValueError("OB1 worker count must be positive")
+    workers = min(workers, len(seeds))
+    output_dir = output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if workers == 1:
+        run_ob1_worker(
+            runtime_dir,
+            output_dir,
+            seeds,
+            n_trials,
+            python_hash_seed,
+        )
+        return
+
+    cache_ready = all(
+        (runtime_dir / "data/processed" / filename).is_file()
+        for filename in DERIVED_CACHE_FILENAMES
+    )
+    completed_chunks = []
+    remaining_seeds = list(seeds)
+    worker_root = output_dir / "_parallel_workers"
+    worker_root.mkdir(parents=True, exist_ok=True)
+
+    if not cache_ready:
+        warmup_seed = remaining_seeds.pop(0)
+        warmup_dir = worker_root / "warmup"
+        run_ob1_worker(
+            runtime_dir,
+            warmup_dir,
+            [warmup_seed],
+            n_trials,
+            python_hash_seed,
+        )
+        completed_chunks.append(([warmup_seed], warmup_dir))
+
+    chunks = split_seed_chunks(remaining_seeds, workers)
+    parallel_chunks = []
+    for chunk_index, chunk in enumerate(chunks):
+        chunk_dir = worker_root / f"worker_{chunk_index:03d}"
+        parallel_chunks.append((chunk, chunk_dir))
+
+    with ThreadPoolExecutor(max_workers=len(parallel_chunks) or 1) as executor:
+        futures = [
+            executor.submit(
+                run_ob1_worker,
+                runtime_dir,
+                chunk_dir,
+                chunk,
+                n_trials,
+                python_hash_seed,
+            )
+            for chunk, chunk_dir in parallel_chunks
+        ]
+        for future in futures:
+            future.result()
+
+    completed_chunks.extend(parallel_chunks)
+    merge_ob1_worker_outputs(
+        output_dir,
+        seeds,
+        completed_chunks,
+        workers_requested=workers,
+        python_hash_seed=python_hash_seed,
+    )
+
+
+def split_seed_chunks(seeds: list[int], workers: int) -> list[list[int]]:
+    """Distribute seeds evenly across a bounded number of worker processes."""
+    if workers < 1:
+        raise ValueError("OB1 worker count must be positive")
+    worker_count = min(workers, len(seeds))
+    if worker_count == 0:
+        return []
+    chunks = [[] for _ in range(worker_count)]
+    for index, seed in enumerate(seeds):
+        chunks[index % worker_count].append(seed)
+    return [chunk for chunk in chunks if chunk]
+
+
+def ob1_worker_environment(python_hash_seed: int) -> dict[str, str]:
+    """Create a deterministic single-thread environment for one OB1 process."""
+    environment = os.environ.copy()
+    environment["PYTHONHASHSEED"] = str(python_hash_seed)
+    environment["TOKENIZERS_PARALLELISM"] = "false"
+    environment["OMP_NUM_THREADS"] = "1"
+    environment["MKL_NUM_THREADS"] = "1"
+    environment["OPENBLAS_NUM_THREADS"] = "1"
+    environment["NUMEXPR_NUM_THREADS"] = "1"
+    return environment
+
+
+def run_ob1_worker(
+    runtime_dir: Path,
+    output_dir: Path,
+    seeds: list[int],
+    n_trials: int,
+    python_hash_seed: int,
+) -> None:
+    """Run one isolated OB1 subprocess for an explicit seed chunk."""
+    if not seeds:
+        raise ValueError("An OB1 worker cannot receive an empty seed chunk")
     command = [
         sys.executable,
         str(WORKER_PATH),
@@ -137,10 +242,100 @@ def run_ob1_subprocess(
         "--n-trials",
         str(n_trials),
     ]
-    environment = os.environ.copy()
-    environment["PYTHONHASHSEED"] = str(python_hash_seed)
-    environment["TOKENIZERS_PARALLELISM"] = "false"
-    subprocess.run(command, check=True, env=environment)
+    subprocess.run(
+        command,
+        check=True,
+        env=ob1_worker_environment(python_hash_seed),
+    )
+
+
+def merge_ob1_worker_outputs(
+    output_dir: Path,
+    seeds: list[int],
+    chunks: list[tuple[list[int], Path]],
+    workers_requested: int,
+    python_hash_seed: int,
+) -> None:
+    """Merge worker CSVs and manifests into the serial output contract."""
+    seed_to_simulation = {seed: index for index, seed in enumerate(seeds)}
+    fixation_frames = []
+    runtimes = []
+    parameters = None
+    chunk_records = []
+
+    for chunk_seeds, chunk_dir in chunks:
+        fixation_path = chunk_dir / "ob1_fixations.csv"
+        manifest_path = chunk_dir / "ob1_worker_manifest.json"
+        if not fixation_path.is_file() or not manifest_path.is_file():
+            raise FileNotFoundError(
+                f"Missing OB1 worker output under {chunk_dir}"
+            )
+        fixation_frame = pd.read_csv(fixation_path)
+        observed_seeds = set(fixation_frame["seed"].astype(int).unique())
+        if observed_seeds != set(chunk_seeds):
+            raise ValueError(
+                f"OB1 worker seed mismatch in {chunk_dir}: "
+                f"{sorted(observed_seeds)} versus {sorted(chunk_seeds)}"
+            )
+        fixation_frame["simulation_id"] = fixation_frame["seed"].map(
+            seed_to_simulation
+        )
+        if fixation_frame["simulation_id"].isna().any():
+            raise ValueError(f"Unknown OB1 seed in {chunk_dir}")
+        fixation_frame["simulation_id"] = fixation_frame[
+            "simulation_id"
+        ].astype(int)
+        fixation_frames.append(fixation_frame)
+
+        with manifest_path.open(encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        if parameters is None:
+            parameters = manifest["parameters"]
+        elif manifest["parameters"] != parameters:
+            raise ValueError("Parallel OB1 workers used different parameters")
+        for runtime in manifest["runtimes"]:
+            runtime = dict(runtime)
+            runtime["simulation_id"] = seed_to_simulation[int(runtime["seed"])]
+            runtimes.append(runtime)
+        chunk_records.append(
+            {
+                "seeds": [int(seed) for seed in chunk_seeds],
+                "output_dir": str(chunk_dir.resolve()),
+            }
+        )
+
+    fixations = pd.concat(fixation_frames, ignore_index=True)
+    fixations = fixations.sort_values(
+        ["simulation_id", "text_id", "fixation_counter"]
+    ).reset_index(drop=True)
+    observed_all_seeds = fixations["seed"].astype(int).drop_duplicates().tolist()
+    if observed_all_seeds != seeds:
+        raise ValueError(
+            f"Merged OB1 seed order mismatch: {observed_all_seeds} versus {seeds}"
+        )
+    fixations.to_csv(output_dir / "ob1_fixations.csv", index=False)
+    runtimes = sorted(runtimes, key=lambda item: item["simulation_id"])
+    with (output_dir / "ob1_worker_manifest.json").open(
+        "w",
+        encoding="utf-8",
+    ) as handle:
+        json.dump(
+            {
+                "condition": "baseline_no_predictability",
+                "python_hash_seed": str(python_hash_seed),
+                "seeds": seeds,
+                "parameters": parameters,
+                "runtimes": runtimes,
+                "fixation_rows": len(fixations),
+                "parallel": True,
+                "workers_requested": workers_requested,
+                "worker_chunks": chunk_records,
+            },
+            handle,
+            indent=2,
+            sort_keys=True,
+        )
+        handle.write("\n")
 
 
 def aggregate_ob1_tvt(
