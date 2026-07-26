@@ -178,6 +178,7 @@ def extract_sigma_record(
         "min_sigma": min_sigma,
         "sigma_left": sigma_left,
         "sigma_right": sigma_right,
+        "right_left_ratio": sigma_right / sigma_left,
         "sigma_symmetric": sigma_symmetric,
         "initial_like": initial_like,
     }
@@ -251,6 +252,7 @@ def direct_sigma_record(
         "min_sigma": min_sigma,
         "sigma_left": effective_left,
         "sigma_right": effective_right,
+        "right_left_ratio": effective_right / effective_left,
         "sigma_symmetric": math.sqrt(
             (effective_left**2 + effective_right**2) / 2.0
         ),

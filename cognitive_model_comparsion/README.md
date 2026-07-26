@@ -167,6 +167,80 @@ column -s, -t "$PROVO_RUN/attention_profile_focused/kernel_directionality.csv"
 cat "$PROVO_RUN/attention_profile_focused/fixed_ob1_priors.json"
 ```
 
+### Sweep the 12 learned sigma pairs
+
+The checked compact configuration is
+`configs/reviewer_sigma_sweep_12.json`. Its `source_accuracy` values are
+provenance from the original reward-model runs; they are not Provo scores and
+are never used to fit or select a redistribution kernel.
+
+Reuse the completed 100-reader OB1 output and run frozen ET1 only once over the
+55 Provo passages:
+
+```bash
+cd /workspace/but
+source /venv/cognitive/bin/activate
+
+export PROVO_RUN=/workspace/but/cognitive_model_comparsion/outputs/provo_ob1_sigma076675
+export SWEEP_RUN=/workspace/but/cognitive_model_comparsion/outputs/provo_sigma_sweep_12
+export SIGMA_CONFIG=/workspace/but/cognitive_model_comparsion/configs/reviewer_sigma_sweep_12.json
+
+CUDA_VISIBLE_DEVICES=0 /venv/cognitive/bin/python \
+  cognitive_model_comparsion/main.py predict-et1 \
+  --corpus provo \
+  --sigma-json "$SIGMA_CONFIG" \
+  --output-dir "$SWEEP_RUN/et1"
+
+/venv/cognitive/bin/python cognitive_model_comparsion/main.py evaluate \
+  --corpus provo \
+  --et1-dir "$SWEEP_RUN/et1" \
+  --ob1-dir "$PROVO_RUN/ob1" \
+  --human-target human_trt_unconditional \
+  --bootstrap-samples 10000 \
+  --seed 20260725 \
+  --output-dir "$SWEEP_RUN/evaluation_unconditional"
+
+/venv/cognitive/bin/python \
+  cognitive_model_comparsion/main.py compare-attention-profile \
+  --corpus provo \
+  --sigma-json "$SWEEP_RUN/et1/checkpoint_sigmas.json" \
+  --et1-dir "$SWEEP_RUN/et1" \
+  --ob1-dir "$PROVO_RUN/ob1" \
+  --ob1-attention-skew 3 \
+  --ob1-attention-skew 4 \
+  --fixation-weighting duration \
+  --profile-component focused \
+  --bootstrap-samples 10000 \
+  --seed 20260725 \
+  --output-dir "$SWEEP_RUN/attention_profile_focused"
+```
+
+The behavior-level sweep produces:
+
+- `sigma_sweep_summary.csv`: one wide row per sigma pair;
+- `checkpoint_matched_asymmetry_contrasts.csv`: per-pair asymmetric versus
+  RMS-width-matched symmetric bootstrap results;
+- `checkpoint_cognitive_bootstrap_summary.csv`: per-pair OB1-referenced
+  contrasts;
+- `seed_result_table.csv`: per-pair method means and confidence intervals.
+
+The kernel-level sweep produces per-pair rows in
+`kernel_alignment_result_table.csv`, `kernel_alignment_contrasts.csv`, and
+`kernel_directionality.csv`. It projects saved OB1 fixations once and writes
+one plot per pair under `kernel_profile_plots/`.
+
+Print the principal behavior and kernel comparisons:
+
+```bash
+python -c "import pandas as pd; p='$SWEEP_RUN/evaluation_unconditional/checkpoint_matched_asymmetry_contrasts.csv'; d=pd.read_csv(p); print(d[d.metric.isin(['human_spearman','ob1_spearman','ob1_word_order_wasserstein'])][['checkpoint_id','source_accuracy','sigma_left','sigma_right','metric','mean_paired_improvement','ci_low','ci_high','permutation_p_two_sided']].to_string(index=False))"
+
+python -c "import pandas as pd; p='$SWEEP_RUN/attention_profile_focused/kernel_alignment_contrasts.csv'; d=pd.read_csv(p); q=d[(d.candidate=='learned_asymmetric') & (d.baseline=='width_matched_symmetric')]; print(q[['checkpoint_id','source_accuracy','learned_sigma_left','learned_sigma_right','ob1_attention_skew','metric','mean_paired_improvement','ci_low','ci_high','permutation_p_two_sided']].to_string(index=False))"
+```
+
+All 12 rows should be reported as a robustness sweep. Choosing the best Provo
+row after inspecting these results and presenting it as a pre-specified
+held-out result would be post-hoc selection.
+
 The main reviewer-facing interpretation must report metric agreement and
 disagreement. A defensible sentence is:
 

@@ -12,6 +12,7 @@ from cognitive_model_comparsion.main import (
     build_parser,
     command_run,
     ensure_prepared,
+    load_sigma_records,
     parse_seed_specification,
     runtime_manifest,
     validate_predict_sigma_arguments,
@@ -208,6 +209,37 @@ def test_parser_accepts_confirmed_direct_sigma_values():
     assert args.checkpoint == []
     assert args.sigma_left == [0.41553]
     assert args.sigma_right == [3.46115]
+
+
+def test_compact_sigma_json_expands_to_runtime_records(tmp_path):
+    """A checked sweep config needs only IDs, accuracies, and effective sigmas."""
+    path = tmp_path / "sigmas.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "checkpoint_id": "first",
+                    "source_accuracy": 0.75,
+                    "sigma_left": 0.4,
+                    "sigma_right": 3.4,
+                },
+                {
+                    "checkpoint_id": "second",
+                    "source_accuracy": 0.74,
+                    "sigma_left": 3.5,
+                    "sigma_right": 0.7,
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    records = load_sigma_records(path)
+
+    assert len(records) == 2
+    assert records[0]["checkpoint"] == "direct-sigma:first"
+    assert records[0]["sigma_symmetric"] > 0
+    assert records[0]["right_left_ratio"] == pytest.approx(8.5)
 
 
 @pytest.mark.parametrize(
@@ -653,6 +685,11 @@ def test_run_evaluate_writes_nested_ob1_clean_sensitivity(
     monkeypatch.setattr(
         cognitive_main,
         "paired_contrasts",
+        lambda *args, **kwargs: pd.DataFrame({"summary": [1]}),
+    )
+    monkeypatch.setattr(
+        cognitive_main,
+        "paired_contrasts_by_checkpoint",
         lambda *args, **kwargs: pd.DataFrame({"summary": [1]}),
     )
     monkeypatch.setattr(

@@ -5,6 +5,8 @@ import pandas as pd
 import pytest
 
 from cognitive_model_comparsion.src.evaluate import (
+    attach_checkpoint_metadata,
+    build_sigma_sweep_summary,
     bootstrap_mean,
     cognitive_contrast_table,
     cognitive_result_table,
@@ -13,6 +15,7 @@ from cognitive_model_comparsion.src.evaluate import (
     merge_word_values,
     normalized_allocation,
     paired_contrasts,
+    paired_contrasts_by_checkpoint,
     paired_sign_flip_pvalue,
     passage_metric_values,
     select_ob1_clean_passages,
@@ -939,3 +942,84 @@ def test_conditional_human_requires_two_evaluable_words():
             word_values,
             human_column="human_trt_conditional",
         )
+
+
+def test_checkpoint_contrasts_and_sweep_summary_keep_all_sigma_pairs():
+    """A multi-sigma sweep remains separate through bootstrap and export."""
+    rows = []
+    for checkpoint_id, asymmetric_gain in (
+        ("rightward", 0.2),
+        ("leftward", -0.1),
+    ):
+        for passage_id in range(3):
+            for method, offset in (
+                ("et1_raw", 0.0),
+                ("et1_symmetric", 0.1),
+                ("et1_asymmetric", 0.1 + asymmetric_gain),
+                ("ob1", 0.3),
+            ):
+                value = 0.2 + 0.01 * passage_id + offset
+                rows.append(
+                    {
+                        "checkpoint_id": checkpoint_id,
+                        "passage_id_zero_based": passage_id,
+                        "method": method,
+                        "human_spearman": value,
+                        "js_divergence": 1.0 - value,
+                        "word_order_wasserstein": 1.0 - value,
+                        "ob1_spearman": value,
+                        "ob1_js_divergence": 1.0 - value,
+                        "ob1_word_order_wasserstein": 1.0 - value,
+                    }
+                )
+    passage_metrics = pd.DataFrame(rows)
+    checkpoint_summary = summarize_methods_by_checkpoint(
+        passage_metrics,
+        bootstrap_samples=100,
+        seed=7,
+    )
+    checkpoint_contrasts = paired_contrasts_by_checkpoint(
+        passage_metrics,
+        bootstrap_samples=100,
+        seed=7,
+    )
+    metadata = pd.DataFrame(
+        {
+            "checkpoint_id": ["rightward", "leftward"],
+            "source_accuracy": [0.77, 0.75],
+            "sigma_left": [0.4, 3.5],
+            "sigma_right": [3.4, 0.7],
+            "sigma_symmetric": [2.42, 2.52],
+        }
+    )
+    checkpoint_summary = attach_checkpoint_metadata(
+        checkpoint_summary,
+        metadata,
+    )
+    checkpoint_contrasts = attach_checkpoint_metadata(
+        checkpoint_contrasts,
+        metadata,
+    )
+    sweep = build_sigma_sweep_summary(
+        checkpoint_summary,
+        checkpoint_contrasts,
+    )
+
+    matched = matched_asymmetry_contrast_table(checkpoint_contrasts)
+    human_matched = matched.loc[
+        matched["metric"].eq("human_spearman")
+    ].set_index("checkpoint_id")
+    assert human_matched.loc[
+        "rightward",
+        "mean_paired_improvement",
+    ] == pytest.approx(0.2)
+    assert human_matched.loc[
+        "leftward",
+        "mean_paired_improvement",
+    ] == pytest.approx(-0.1)
+    assert sweep["checkpoint_id"].tolist() == ["rightward", "leftward"]
+    assert "et1_asymmetric__ob1_spearman" in sweep
+    assert (
+        "asym_minus_symmetric__human_spearman"
+        "__mean_paired_improvement"
+    ) in sweep

@@ -613,19 +613,34 @@ def summarize_profile_metrics(
     bootstrap_samples: int,
     seed: int,
 ) -> pd.DataFrame:
-    """Bootstrap method means over the 55 Provo passages."""
+    """Bootstrap method means separately for every learned sigma record."""
     rng = np.random.default_rng(seed)
     records = []
-    for (skew, method), group in passage_metrics.groupby(
-        ["ob1_attention_skew", "method"],
+    for (checkpoint_id, skew, method), group in passage_metrics.groupby(
+        ["checkpoint_id", "ob1_attention_skew", "method"],
         sort=True,
     ):
         record = {
+            "checkpoint_id": checkpoint_id,
             "ob1_attention_skew": float(skew),
             "method": method,
             "display_name": PROFILE_DISPLAY_NAMES[method],
             "passages": int(len(group)),
         }
+        for column in (
+            "source_accuracy",
+            "learned_sigma_left",
+            "learned_sigma_right",
+            "learned_right_left_ratio",
+            "width_matched_symmetric_sigma",
+        ):
+            if column in group:
+                values = group[column].drop_duplicates()
+                if len(values) != 1:
+                    raise ValueError(
+                        f"{column} is not constant within {checkpoint_id}"
+                    )
+                record[column] = values.iloc[0]
         for metric in PROFILE_METRIC_DIRECTIONS:
             mean, low, high = bootstrap_mean(
                 group[metric].to_numpy(),
@@ -644,14 +659,32 @@ def profile_paired_contrasts(
     bootstrap_samples: int,
     seed: int,
 ) -> pd.DataFrame:
-    """Compute paired passage-level kernel-profile contrasts."""
+    """Compute paired passage-level contrasts for every sigma record."""
     bootstrap_rng = np.random.default_rng(seed)
     permutation_rng = np.random.default_rng(seed)
     records = []
-    for skew, skew_metrics in passage_metrics.groupby(
-        "ob1_attention_skew",
+    for (checkpoint_id, skew), skew_metrics in passage_metrics.groupby(
+        ["checkpoint_id", "ob1_attention_skew"],
         sort=True,
     ):
+        metadata = {
+            "checkpoint_id": checkpoint_id,
+            "ob1_attention_skew": float(skew),
+        }
+        for column in (
+            "source_accuracy",
+            "learned_sigma_left",
+            "learned_sigma_right",
+            "learned_right_left_ratio",
+            "width_matched_symmetric_sigma",
+        ):
+            if column in skew_metrics:
+                values = skew_metrics[column].drop_duplicates()
+                if len(values) != 1:
+                    raise ValueError(
+                        f"{column} is not constant within {checkpoint_id}"
+                    )
+                metadata[column] = values.iloc[0]
         for candidate_name, baseline_name in PROFILE_COMPARISONS:
             candidate = skew_metrics.loc[
                 skew_metrics["method"].eq(candidate_name)
@@ -685,7 +718,7 @@ def profile_paired_contrasts(
                 )
                 records.append(
                     {
-                        "ob1_attention_skew": float(skew),
+                        **metadata,
                         "candidate": candidate_name,
                         "baseline": baseline_name,
                         "metric": metric,
@@ -704,26 +737,56 @@ def compare_attention_profiles(
     passages: pd.DataFrame,
     token_values: pd.DataFrame,
     ob1_fixations: pd.DataFrame,
-    sigma_record: dict,
+    sigma_records: dict | list[dict],
     attention_skews: tuple[float, ...] = (3.0, 4.0),
     fixation_weighting: str = "duration",
     profile_component: str = "focused",
     bootstrap_samples: int = 10000,
     seed: int = 20260725,
 ) -> dict:
-    """Run projected OB1 attention and Gaussian-kernel comparisons."""
+    """Compare one shared OB1 projection with one or more sigma records."""
+    if isinstance(sigma_records, dict):
+        sigma_records = [sigma_records]
+    if not sigma_records:
+        raise ValueError("At least one sigma record is required")
     required_sigma_keys = {
         "checkpoint_id",
         "sigma_left",
         "sigma_right",
         "sigma_symmetric",
     }
-    missing_sigma = sorted(required_sigma_keys - set(sigma_record))
-    if missing_sigma:
-        raise ValueError(f"Sigma record is missing keys: {missing_sigma}")
-    learned_left = float(sigma_record["sigma_left"])
-    learned_right = float(sigma_record["sigma_right"])
-    symmetric_sigma = float(sigma_record["sigma_symmetric"])
+    normalized_records = []
+    for sigma_record in sigma_records:
+        missing_sigma = sorted(required_sigma_keys - set(sigma_record))
+        if missing_sigma:
+            raise ValueError(
+                f"Sigma record is missing keys: {missing_sigma}"
+            )
+        normalized_record = {
+            "checkpoint_id": str(sigma_record["checkpoint_id"]),
+            "source_accuracy": sigma_record.get("source_accuracy"),
+            "learned_sigma_left": float(sigma_record["sigma_left"]),
+            "learned_sigma_right": float(sigma_record["sigma_right"]),
+            "width_matched_symmetric_sigma": float(
+                sigma_record["sigma_symmetric"]
+            ),
+        }
+        if (
+            normalized_record["learned_sigma_left"] <= 0
+            or normalized_record["learned_sigma_right"] <= 0
+            or normalized_record["width_matched_symmetric_sigma"] <= 0
+        ):
+            raise ValueError("All effective sigma values must be positive")
+        normalized_record["learned_right_left_ratio"] = (
+            normalized_record["learned_sigma_right"]
+            / normalized_record["learned_sigma_left"]
+        )
+        normalized_records.append(normalized_record)
+    checkpoint_ids = [
+        record["checkpoint_id"] for record in normalized_records
+    ]
+    if len(checkpoint_ids) != len(set(checkpoint_ids)):
+        raise ValueError("Sigma record checkpoint IDs must be unique")
     references, support, collection_audit = (
         project_ob1_attention_to_t5(
             passages,
@@ -772,71 +835,78 @@ def compare_attention_profiles(
         fixed_prior_records.append(
             {
                 "ob1_attention_skew": float(skew),
-                "checkpoint_id": sigma_record["checkpoint_id"],
                 "profile_component": profile_component,
                 "fixation_weighting": fixation_weighting,
                 "projection_coordinate": "relative_native_t5_token_index",
                 **fixed_prior,
             }
         )
-        method_sigmas = {
-            "raw_delta": (None, None),
-            "width_matched_symmetric": (
-                symmetric_sigma,
-                symmetric_sigma,
-            ),
-            "fixed_ob1_gaussian": (
-                fixed_prior["sigma_left"],
-                fixed_prior["sigma_right"],
-            ),
-            "learned_asymmetric": (
-                learned_left,
-                learned_right,
-            ),
-        }
-        global_candidates = {}
-        for method, (left, right) in method_sigmas.items():
-            global_candidates[method] = candidate_profile(
-                support,
-                method,
-                left,
-                right,
-            )
-        for index, offset in enumerate(support):
-            profile_rows.append(
-                {
-                    "ob1_attention_skew": float(skew),
-                    "relative_t5_token_offset": int(offset),
-                    "ob1_attention_profile": float(
-                        reference_global[index]
-                    ),
-                    **{
-                        method: float(profile[index])
-                        for method, profile in global_candidates.items()
-                    },
-                }
-            )
-        for passage_id, reference in passage_references.items():
+        for sigma_record in normalized_records:
+            learned_left = sigma_record["learned_sigma_left"]
+            learned_right = sigma_record["learned_sigma_right"]
+            symmetric_sigma = sigma_record[
+                "width_matched_symmetric_sigma"
+            ]
+            method_sigmas = {
+                "raw_delta": (None, None),
+                "width_matched_symmetric": (
+                    symmetric_sigma,
+                    symmetric_sigma,
+                ),
+                "fixed_ob1_gaussian": (
+                    fixed_prior["sigma_left"],
+                    fixed_prior["sigma_right"],
+                ),
+                "learned_asymmetric": (
+                    learned_left,
+                    learned_right,
+                ),
+            }
+            global_candidates = {}
             for method, (left, right) in method_sigmas.items():
-                candidate = candidate_profile(
+                global_candidates[method] = candidate_profile(
                     support,
                     method,
                     left,
                     right,
                 )
-                metric_rows.append(
+            for index, offset in enumerate(support):
+                profile_rows.append(
                     {
-                        "checkpoint_id": sigma_record["checkpoint_id"],
+                        **sigma_record,
                         "ob1_attention_skew": float(skew),
-                        "passage_id_zero_based": int(passage_id),
-                        "method": method,
-                        **profile_metrics(
-                            reference,
-                            candidate,
-                            support,
+                        "relative_t5_token_offset": int(offset),
+                        "ob1_attention_profile": float(
+                            reference_global[index]
                         ),
+                        **{
+                            method: float(profile[index])
+                            for method, profile
+                            in global_candidates.items()
+                        },
                     }
                 )
+            for passage_id, reference in passage_references.items():
+                for method, (left, right) in method_sigmas.items():
+                    candidate = candidate_profile(
+                        support,
+                        method,
+                        left,
+                        right,
+                    )
+                    metric_rows.append(
+                        {
+                            **sigma_record,
+                            "ob1_attention_skew": float(skew),
+                            "passage_id_zero_based": int(passage_id),
+                            "method": method,
+                            **profile_metrics(
+                                reference,
+                                candidate,
+                                support,
+                            ),
+                        }
+                    )
 
     passage_metrics = pd.DataFrame(metric_rows)
     result_table = summarize_profile_metrics(
@@ -851,11 +921,8 @@ def compare_attention_profiles(
     )
     audit = {
         **collection_audit,
-        "checkpoint_id": sigma_record["checkpoint_id"],
-        "learned_sigma_left": learned_left,
-        "learned_sigma_right": learned_right,
-        "learned_right_left_ratio": learned_right / learned_left,
-        "width_matched_symmetric_sigma": symmetric_sigma,
+        "checkpoint_count": len(normalized_records),
+        "learned_sigma_records": normalized_records,
         "attention_skews": [
             float(value) for value in sorted(references)
         ],
@@ -880,6 +947,8 @@ def compare_attention_profiles(
             "profile is descriptive, not held-out validation"
         ),
     }
+    if len(normalized_records) == 1:
+        audit.update(normalized_records[0])
     attention_profiles = pd.DataFrame(profile_rows)
     return {
         "attention_profiles": attention_profiles,
@@ -940,10 +1009,27 @@ def write_attention_profile_outputs(
             sort_keys=True,
         )
         handle.write("\n")
-    plot_attention_profiles(
-        artifacts["attention_profiles"],
-        output_dir / "kernel_profiles.png",
-    )
+    profiles = artifacts["attention_profiles"]
+    checkpoint_ids = profiles["checkpoint_id"].drop_duplicates().tolist()
+    if len(checkpoint_ids) == 1:
+        plot_attention_profiles(
+            profiles,
+            output_dir / "kernel_profiles.png",
+        )
+    else:
+        plot_dir = output_dir / "kernel_profile_plots"
+        for checkpoint_id in checkpoint_ids:
+            safe_id = re.sub(
+                r"[^A-Za-z0-9._-]+",
+                "_",
+                str(checkpoint_id),
+            ).strip("_")
+            plot_attention_profiles(
+                profiles.loc[
+                    profiles["checkpoint_id"].eq(checkpoint_id)
+                ],
+                plot_dir / f"{safe_id}.png",
+            )
 
 
 def plot_attention_profiles(
@@ -1009,8 +1095,8 @@ def summarize_directionality(profiles: pd.DataFrame) -> pd.DataFrame:
         *PROFILE_METHODS,
     ]
     records = []
-    for skew, skew_profiles in profiles.groupby(
-        "ob1_attention_skew",
+    for (checkpoint_id, skew), skew_profiles in profiles.groupby(
+        ["checkpoint_id", "ob1_attention_skew"],
         sort=True,
     ):
         offsets = skew_profiles["relative_t5_token_offset"]
@@ -1021,8 +1107,24 @@ def summarize_directionality(profiles: pd.DataFrame) -> pd.DataFrame:
             noncenter = left + right
             records.append(
                 {
+                    "checkpoint_id": checkpoint_id,
                     "ob1_attention_skew": float(skew),
                     "method": method,
+                    "source_accuracy": skew_profiles[
+                        "source_accuracy"
+                    ].iloc[0],
+                    "learned_sigma_left": skew_profiles[
+                        "learned_sigma_left"
+                    ].iloc[0],
+                    "learned_sigma_right": skew_profiles[
+                        "learned_sigma_right"
+                    ].iloc[0],
+                    "learned_right_left_ratio": skew_profiles[
+                        "learned_right_left_ratio"
+                    ].iloc[0],
+                    "width_matched_symmetric_sigma": skew_profiles[
+                        "width_matched_symmetric_sigma"
+                    ].iloc[0],
                     "left_mass": left,
                     "center_mass": center,
                     "right_mass": right,

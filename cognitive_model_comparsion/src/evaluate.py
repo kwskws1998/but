@@ -787,6 +787,174 @@ def paired_contrasts(
     return pd.DataFrame(records)
 
 
+def paired_contrasts_by_checkpoint(
+    passage_metrics: pd.DataFrame,
+    bootstrap_samples: int,
+    seed: int,
+    cluster_column: str | None = None,
+) -> pd.DataFrame:
+    """Compute paired contrasts without averaging distinct sigma records."""
+    frames = []
+    for offset, (checkpoint_id, checkpoint_metrics) in enumerate(
+        passage_metrics.groupby("checkpoint_id", sort=True)
+    ):
+        contrasts = paired_contrasts(
+            checkpoint_metrics,
+            bootstrap_samples,
+            seed + offset,
+            cluster_column=cluster_column,
+        )
+        contrasts.insert(0, "checkpoint_id", checkpoint_id)
+        frames.append(contrasts)
+    if not frames:
+        raise ValueError("No checkpoint-level paired contrasts were computed")
+    return pd.concat(frames, ignore_index=True)
+
+
+def attach_checkpoint_metadata(
+    frame: pd.DataFrame,
+    checkpoint_metadata: pd.DataFrame | None,
+) -> pd.DataFrame:
+    """Join one validated sigma-provenance row to each checkpoint result."""
+    if checkpoint_metadata is None:
+        return frame
+    if "checkpoint_id" not in frame:
+        raise ValueError("Checkpoint result is missing checkpoint_id")
+    if "checkpoint_id" not in checkpoint_metadata:
+        raise ValueError("Sigma metadata is missing checkpoint_id")
+    if checkpoint_metadata["checkpoint_id"].duplicated().any():
+        raise ValueError("Sigma metadata checkpoint IDs must be unique")
+    metadata_columns = [
+        column
+        for column in (
+            "checkpoint_id",
+            "source_accuracy",
+            "sigma_left",
+            "sigma_right",
+            "sigma_symmetric",
+            "right_left_ratio",
+        )
+        if column in checkpoint_metadata
+    ]
+    metadata = checkpoint_metadata[metadata_columns].copy()
+    result = frame.merge(
+        metadata,
+        on="checkpoint_id",
+        how="left",
+        validate="many_to_one",
+    )
+    missing = sorted(
+        set(frame["checkpoint_id"])
+        - set(metadata["checkpoint_id"])
+    )
+    if missing:
+        raise ValueError(
+            f"Sigma metadata is missing checkpoint IDs: {missing}"
+        )
+    return result
+
+
+def build_sigma_sweep_summary(
+    checkpoint_summary: pd.DataFrame,
+    checkpoint_contrasts: pd.DataFrame,
+) -> pd.DataFrame:
+    """Build one analysis-ready row per learned sigma configuration."""
+    required_summary = {"checkpoint_id", "method"}
+    missing_summary = sorted(required_summary - set(checkpoint_summary))
+    if missing_summary:
+        raise ValueError(
+            f"Checkpoint summary is missing columns: {missing_summary}"
+        )
+    metric_columns = [
+        metric
+        for metric in METRIC_DIRECTIONS
+        if metric in checkpoint_summary
+    ]
+    metadata_columns = [
+        column
+        for column in (
+            "source_accuracy",
+            "sigma_left",
+            "sigma_right",
+            "sigma_symmetric",
+            "right_left_ratio",
+        )
+        if column in checkpoint_summary
+    ]
+    metadata = (
+        checkpoint_summary[
+            ["checkpoint_id", *metadata_columns]
+        ]
+        .drop_duplicates()
+        .reset_index(drop=True)
+    )
+    if metadata["checkpoint_id"].duplicated().any():
+        raise ValueError(
+            "Checkpoint metadata is inconsistent across method rows"
+        )
+    point_estimates = checkpoint_summary.pivot(
+        index="checkpoint_id",
+        columns="method",
+        values=metric_columns,
+    )
+    point_estimates.columns = [
+        f"{method}__{metric}"
+        for metric, method in point_estimates.columns
+    ]
+    point_estimates = point_estimates.reset_index()
+    matched = matched_asymmetry_contrast_table(checkpoint_contrasts)
+    if matched.empty:
+        contrast_wide = pd.DataFrame(
+            {"checkpoint_id": metadata["checkpoint_id"]}
+        )
+    else:
+        contrast_fields = [
+            field
+            for field in (
+                "mean_paired_improvement",
+                "ci_low",
+                "ci_high",
+                "permutation_p_two_sided",
+            )
+            if field in matched
+        ]
+        contrast_wide = matched.pivot(
+            index="checkpoint_id",
+            columns="metric",
+            values=contrast_fields,
+        )
+        contrast_wide.columns = [
+            f"asym_minus_symmetric__{metric}__{field}"
+            for field, metric in contrast_wide.columns
+        ]
+        contrast_wide = contrast_wide.reset_index()
+    return (
+        metadata.merge(
+            point_estimates,
+            on="checkpoint_id",
+            how="left",
+            validate="one_to_one",
+        )
+        .merge(
+            contrast_wide,
+            on="checkpoint_id",
+            how="left",
+            validate="one_to_one",
+        )
+        .sort_values(
+            ["source_accuracy", "checkpoint_id"]
+            if "source_accuracy" in metadata_columns
+            else ["checkpoint_id"],
+            ascending=(
+                [False, True]
+                if "source_accuracy" in metadata_columns
+                else True
+            ),
+        )
+        .reset_index(drop=True)
+    )
+
+
 def cognitive_result_table(method_summary: pd.DataFrame) -> pd.DataFrame:
     """Select ET1-to-OB1 alignment estimates for the reviewer-facing table."""
     identifier_columns = ["method", "display_name", "passages"]
@@ -961,9 +1129,20 @@ def write_evaluation_outputs(
     checkpoint_summary: pd.DataFrame,
     contrasts: pd.DataFrame,
     audit: dict,
+    checkpoint_contrasts: pd.DataFrame | None = None,
+    checkpoint_metadata: pd.DataFrame | None = None,
 ) -> None:
     """Write machine-readable metrics, rebuttal table, plot, and audit."""
     output_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_summary = attach_checkpoint_metadata(
+        checkpoint_summary,
+        checkpoint_metadata,
+    )
+    if checkpoint_contrasts is not None:
+        checkpoint_contrasts = attach_checkpoint_metadata(
+            checkpoint_contrasts,
+            checkpoint_metadata,
+        )
     cognitive_summary = cognitive_result_table(method_summary)
     cognitive_contrasts = cognitive_contrast_table(contrasts)
     matched_asymmetry = matched_asymmetry_contrast_table(contrasts)
@@ -987,6 +1166,26 @@ def write_evaluation_outputs(
         output_dir / "matched_asymmetry_contrasts.csv",
         index=False,
     )
+    if checkpoint_contrasts is not None:
+        checkpoint_contrasts.to_csv(
+            output_dir / "checkpoint_bootstrap_summary.csv",
+            index=False,
+        )
+        cognitive_contrast_table(checkpoint_contrasts).to_csv(
+            output_dir / "checkpoint_cognitive_bootstrap_summary.csv",
+            index=False,
+        )
+        matched_asymmetry_contrast_table(checkpoint_contrasts).to_csv(
+            output_dir / "checkpoint_matched_asymmetry_contrasts.csv",
+            index=False,
+        )
+        build_sigma_sweep_summary(
+            checkpoint_summary,
+            checkpoint_contrasts,
+        ).to_csv(
+            output_dir / "sigma_sweep_summary.csv",
+            index=False,
+        )
     plot_human_spearman(
         passage_metrics,
         output_dir / "human_spearman_by_passage.png",

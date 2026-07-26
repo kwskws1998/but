@@ -43,6 +43,7 @@ from cognitive_model_comparsion.src.evaluate import (
     evaluate_passages,
     merge_word_values,
     paired_contrasts,
+    paired_contrasts_by_checkpoint,
     select_ob1_clean_passages,
     summarize_methods,
     summarize_methods_by_checkpoint,
@@ -396,12 +397,62 @@ def write_sigma_records(output_dir: Path, records: list[dict]) -> None:
 
 
 def load_sigma_records(path: Path) -> list[dict]:
-    """Load sigma records written by this entry point."""
+    """Load complete provenance records or compact effective-sigma records."""
     with path.open(encoding="utf-8") as handle:
         records = json.load(handle)
     if not isinstance(records, list) or not records:
         raise ValueError(f"Sigma JSON must contain a nonempty list: {path}")
-    return records
+    normalized = []
+    runtime_keys = {
+        "checkpoint",
+        "log_sigma_left",
+        "log_sigma_right",
+        "min_sigma",
+        "sigma_symmetric",
+    }
+    for index, record in enumerate(records):
+        if not isinstance(record, dict):
+            raise ValueError(
+                f"Sigma JSON record {index} must be an object"
+            )
+        if runtime_keys.issubset(record):
+            normalized_record = record.copy()
+        else:
+            compact_keys = {
+                "checkpoint_id",
+                "sigma_left",
+                "sigma_right",
+            }
+            missing = sorted(compact_keys - set(record))
+            if missing:
+                raise ValueError(
+                    f"Sigma JSON record {index} is missing keys: {missing}"
+                )
+            normalized_record = direct_sigma_record(
+                checkpoint_id=str(record["checkpoint_id"]),
+                sigma_left=float(record["sigma_left"]),
+                sigma_right=float(record["sigma_right"]),
+                value_type=str(
+                    record.get("sigma_input_value_type", "effective")
+                ),
+                allow_initial_sigmas=bool(
+                    record.get("allow_initial_sigmas", False)
+                ),
+                source_accuracy=record.get("source_accuracy"),
+            )
+        normalized_record["right_left_ratio"] = (
+            float(normalized_record["sigma_right"])
+            / float(normalized_record["sigma_left"])
+        )
+        normalized.append(normalized_record)
+    identifiers = [
+        str(record.get("checkpoint_id", "")) for record in normalized
+    ]
+    if any(not identifier for identifier in identifiers):
+        raise ValueError("Every sigma JSON record needs a checkpoint_id")
+    if len(identifiers) != len(set(identifiers)):
+        raise ValueError("Sigma JSON checkpoint IDs must be unique")
+    return normalized
 
 
 def run_predict_et1(
@@ -431,6 +482,8 @@ def run_predict_et1(
     audit = dict(artifacts[-1])
     audit["corpus"] = corpus
     write_et1_outputs(output_dir, *artifacts[:-1], audit)
+    if sigma_records:
+        write_sigma_records(output_dir, sigma_records)
     return audit
 
 
@@ -647,6 +700,18 @@ def run_evaluate(
         seed,
         cluster_column=cluster_column,
     )
+    checkpoint_contrasts = paired_contrasts_by_checkpoint(
+        passage_metrics,
+        bootstrap_samples,
+        seed,
+        cluster_column=cluster_column,
+    )
+    sigma_metadata_path = et1_dir / "checkpoint_sigmas.json"
+    checkpoint_metadata = (
+        pd.DataFrame(load_sigma_records(sigma_metadata_path))
+        if sigma_metadata_path.is_file()
+        else None
+    )
     audit = {
         "corpus": corpus,
         "et1_source_dir": str(et1_dir.resolve()),
@@ -682,6 +747,8 @@ def run_evaluate(
         checkpoint_summary,
         contrasts,
         audit,
+        checkpoint_contrasts,
+        checkpoint_metadata,
     )
     if with_ob1_clean_passage_sensitivity:
         clean_metrics, selection_audit = select_ob1_clean_passages(
@@ -706,6 +773,12 @@ def run_evaluate(
             cluster_column=cluster_column,
         )
         clean_contrasts = paired_contrasts(
+            clean_metrics,
+            bootstrap_samples,
+            seed,
+            cluster_column=cluster_column,
+        )
+        clean_checkpoint_contrasts = paired_contrasts_by_checkpoint(
             clean_metrics,
             bootstrap_samples,
             seed,
@@ -739,6 +812,8 @@ def run_evaluate(
             clean_checkpoint_summary,
             clean_contrasts,
             clean_audit,
+            clean_checkpoint_contrasts,
+            checkpoint_metadata,
         )
     return audit
 
@@ -974,10 +1049,6 @@ def command_compare_attention_profile(args: argparse.Namespace) -> None:
         if args.checkpoint
         else direct_sigma_records_from_args(args)
     )
-    if len(records) != 1:
-        raise ValueError(
-            "compare-attention-profile requires exactly one sigma record"
-        )
     processed_dir = resolved_path(
         args.processed_dir,
         default_processed_dir(args.corpus),
@@ -998,7 +1069,7 @@ def command_compare_attention_profile(args: argparse.Namespace) -> None:
         passages,
         pd.read_csv(token_path),
         pd.read_csv(fixation_path),
-        records[0],
+        records,
         attention_skews=attention_skews,
         fixation_weighting=args.fixation_weighting,
         profile_component=args.profile_component,

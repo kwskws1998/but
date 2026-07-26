@@ -177,3 +177,62 @@ def test_profile_comparison_writes_four_methods_and_checked_prior(tmp_path):
     ].iloc[0]
     assert learned["right_mass"] > learned["left_mass"]
     assert (tmp_path / "kernel_profiles.png").is_file()
+
+
+def test_profile_comparison_sweeps_multiple_sigmas_on_one_ob1_projection(
+    tmp_path,
+):
+    """Every sigma pair receives separate metrics and a separate plot."""
+    passages, tokens, fixations = synthetic_profile_inputs()
+    records = [
+        {
+            "checkpoint_id": "rightward",
+            "source_accuracy": 0.77,
+            "sigma_left": 0.4,
+            "sigma_right": 3.4,
+            "sigma_symmetric": np.sqrt((0.4**2 + 3.4**2) / 2),
+        },
+        {
+            "checkpoint_id": "leftward",
+            "source_accuracy": 0.75,
+            "sigma_left": 3.5,
+            "sigma_right": 0.7,
+            "sigma_symmetric": np.sqrt((3.5**2 + 0.7**2) / 2),
+        },
+    ]
+
+    artifacts = compare_attention_profiles(
+        passages,
+        tokens,
+        fixations,
+        records,
+        attention_skews=(3.0,),
+        bootstrap_samples=100,
+        seed=7,
+    )
+    write_attention_profile_outputs(tmp_path, artifacts)
+
+    assert artifacts["audit"]["checkpoint_count"] == 2
+    assert set(artifacts["result_table"]["checkpoint_id"]) == {
+        "rightward",
+        "leftward",
+    }
+    assert len(artifacts["fixed_priors"]) == 1
+    assert len(artifacts["passage_metrics"]) == 16
+    assert (
+        tmp_path / "kernel_profile_plots/rightward.png"
+    ).is_file()
+    assert (
+        tmp_path / "kernel_profile_plots/leftward.png"
+    ).is_file()
+    directionality = artifacts["directionality"]
+    rightward = directionality.query(
+        "checkpoint_id == 'rightward' "
+        "and method == 'learned_asymmetric'"
+    ).iloc[0]
+    leftward = directionality.query(
+        "checkpoint_id == 'leftward' "
+        "and method == 'learned_asymmetric'"
+    ).iloc[0]
+    assert rightward["right_mass"] > rightward["left_mass"]
+    assert leftward["right_mass"] < leftward["left_mass"]
