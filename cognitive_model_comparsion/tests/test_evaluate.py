@@ -6,22 +6,129 @@ import pytest
 
 from cognitive_model_comparsion.src.evaluate import (
     bootstrap_mean,
+    evaluate_passages,
+    merge_word_values,
     normalized_allocation,
     paired_contrasts,
+    paired_sign_flip_pvalue,
     passage_metric_values,
+    select_ob1_clean_passages,
+    summarize_methods,
     summarize_methods_by_checkpoint,
 )
 
 
+def _passage_word_values(
+    human_unconditional: list[float],
+    human_conditional: list[float],
+) -> pd.DataFrame:
+    """Build one complete checkpoint-passage grid for evaluation tests."""
+    count = len(human_unconditional)
+    increasing = np.arange(1, count + 1, dtype=float)
+    return pd.DataFrame(
+        {
+            "checkpoint_id": ["seed"] * count,
+            "passage_id_zero_based": [0] * count,
+            "word_id_zero_based": np.arange(count),
+            "human_trt_unconditional": human_unconditional,
+            "human_trt_conditional": human_conditional,
+            "et1_raw_word_trt": increasing,
+            "et1_symmetric_word_trt": increasing,
+            "et1_asymmetric_word_trt": increasing,
+            "ob1_tvt": increasing,
+        }
+    )
+
+
+def _complete_merge_inputs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Build matching canonical, two-checkpoint ET1, and OB1 word grids."""
+    canonical = pd.DataFrame(
+        {
+            "passage_id_raw": [1, 1],
+            "passage_id_zero_based": [0, 0],
+            "word_id_zero_based": [0, 1],
+            "word_raw": ["one", "two"],
+            "human_trt_unconditional": [1.0, 2.0],
+            "human_trt_conditional": [1.0, 2.0],
+        }
+    )
+    et1 = pd.DataFrame(
+        {
+            "checkpoint_id": [
+                "seed-a",
+                "seed-a",
+                "seed-b",
+                "seed-b",
+            ],
+            "passage_id_zero_based": [0, 0, 0, 0],
+            "word_id_zero_based": [0, 1, 0, 1],
+            "et1_raw_word_trt": [1.0, 2.0, 1.0, 2.0],
+            "et1_symmetric_word_trt": [1.0, 2.0, 1.0, 2.0],
+            "et1_asymmetric_word_trt": [1.0, 2.0, 1.0, 2.0],
+        }
+    )
+    ob1 = pd.DataFrame(
+        {
+            "passage_id_zero_based": [0, 0],
+            "word_id_zero_based": [0, 1],
+            "ob1_tvt": [1.0, 2.0],
+        }
+    )
+    return canonical, et1, ob1
+
+
 def test_identical_allocations_have_perfect_rank_and_zero_distance():
-    """Identical vectors yield rho one and zero JS/Wasserstein distance."""
+    """Identical vectors yield rho one and zero JS/word-order distance."""
     values = np.array([1.0, 2.0, 4.0])
     metrics = passage_metric_values(values, values, values)
 
     assert metrics["human_spearman"] == pytest.approx(1.0)
     assert metrics["ob1_spearman"] == pytest.approx(1.0)
     assert metrics["js_divergence"] == pytest.approx(0.0)
-    assert metrics["wasserstein"] == pytest.approx(0.0)
+    assert metrics["word_order_wasserstein"] == pytest.approx(0.0)
+
+
+def test_word_order_transport_distinguishes_adjacent_and_far_mass():
+    """Normalized word order charges less for adjacent than far transport."""
+    human = np.array([1.0, 0.0, 0.0])
+    adjacent = passage_metric_values(
+        human,
+        np.array([0.0, 1.0, 0.0]),
+        human,
+    )
+    far = passage_metric_values(
+        human,
+        np.array([0.0, 0.0, 1.0]),
+        human,
+    )
+
+    assert adjacent["word_order_wasserstein"] == pytest.approx(0.5)
+    assert far["word_order_wasserstein"] == pytest.approx(1.0)
+    assert adjacent["js_divergence"] == pytest.approx(1.0)
+    assert far["js_divergence"] == pytest.approx(1.0)
+
+
+def test_word_order_transport_uses_original_sparse_coordinates():
+    """Excluded words do not collapse the remaining word-order distance."""
+    human = np.array([1.0, 0.0, 0.0])
+    method = np.array([0.0, 1.0, 0.0])
+    metrics = passage_metric_values(
+        human,
+        method,
+        human,
+        positions=np.array([0.0, 0.2, 1.0]),
+    )
+
+    assert metrics["word_order_wasserstein"] == pytest.approx(0.2)
+
+
+def test_js_output_is_divergence_not_scipy_distance():
+    """The squared SciPy distance equals the hand-calculated JS divergence."""
+    human = np.array([1.0, 0.0, 0.0])
+    method = np.array([0.5, 0.5, 0.0])
+    metrics = passage_metric_values(human, method, human)
+
+    assert metrics["js_divergence"] == pytest.approx(0.31127812445913283)
 
 
 def test_negative_values_are_clipped_only_for_distribution_metrics():
@@ -32,14 +139,124 @@ def test_negative_values_are_clipped_only_for_distribution_metrics():
     assert allocation.tolist() == pytest.approx([0.0, 0.25, 0.75])
 
 
+@pytest.mark.parametrize(
+    ("human", "ob1", "message"),
+    [
+        (
+            np.array([-1.0, 2.0, 3.0]),
+            np.array([1.0, 2.0, 3.0]),
+            "Human TRT contains negative values",
+        ),
+        (
+            np.array([1.0, 2.0, 3.0]),
+            np.array([-1.0, 2.0, 3.0]),
+            "OB1 TVT contains negative values",
+        ),
+    ],
+)
+def test_passage_metrics_reject_negative_human_or_ob1(
+    human,
+    ob1,
+    message,
+):
+    """Recorded Human TRT and simulated OB1 TVT cannot be negative."""
+    with pytest.raises(ValueError, match=message):
+        passage_metric_values(
+            human,
+            np.array([1.0, 2.0, 3.0]),
+            ob1,
+        )
+
+
+def test_passage_metrics_allow_negative_et1_regression_output():
+    """Only ET1 regression output may be clipped for allocation metrics."""
+    metrics = passage_metric_values(
+        np.array([1.0, 2.0, 3.0]),
+        np.array([-1.0, 2.0, 3.0]),
+        np.array([1.0, 2.0, 3.0]),
+    )
+
+    assert metrics["method_clipped_values"] == 1
+    assert metrics["human_clipped_values"] == 0
+    assert metrics["ob1_clipped_values"] == 0
+
+
 def test_bootstrap_is_deterministic_for_fixed_seed():
-    """A fixed RNG seed reproduces the same interval and p-value."""
+    """A fixed RNG seed reproduces the same percentile interval."""
     values = np.array([0.1, 0.2, 0.3, 0.4])
     first = bootstrap_mean(values, 1000, np.random.default_rng(7))
     second = bootstrap_mean(values, 1000, np.random.default_rng(7))
 
     assert first == second
     assert first[0] == pytest.approx(0.25)
+
+
+def test_cluster_bootstrap_divides_once_by_resampled_observation_count():
+    """Unequal clusters retain a passage-weighted mean in every resample."""
+
+    class FixedClusterRng:
+        """Return all ordered two-cluster bootstrap samples once."""
+
+        def integers(self, low, high=None, size=None):
+            assert low == 0
+            assert high == 2
+            assert size == (4, 2)
+            return np.array(
+                [
+                    [0, 0],
+                    [0, 1],
+                    [1, 0],
+                    [1, 1],
+                ]
+            )
+
+    values = np.array([2.0, 4.0, 10.0])
+    clusters = np.array(["a", "a", "b"])
+    replicates = np.array([3.0, 16.0 / 3.0, 16.0 / 3.0, 10.0])
+    expected_lower, expected_upper = np.percentile(
+        replicates,
+        [2.5, 97.5],
+    )
+
+    mean, lower, upper = bootstrap_mean(
+        values,
+        samples=4,
+        rng=FixedClusterRng(),
+        clusters=clusters,
+    )
+
+    assert mean == pytest.approx(16.0 / 3.0)
+    assert lower == pytest.approx(expected_lower)
+    assert upper == pytest.approx(expected_upper)
+
+
+def test_paired_sign_flip_has_exact_hand_calculated_p_value():
+    """Two equal positive differences have exact two-sided sign-flip p 0.5."""
+    p_value = paired_sign_flip_pvalue(
+        np.array([1.0, 1.0]),
+        samples=4,
+        rng=np.random.default_rng(7),
+    )
+
+    assert p_value == pytest.approx(0.5)
+
+
+def test_monte_carlo_sign_flip_is_seeded_and_plus_one_corrected():
+    """Monte Carlo sign flipping is reproducible and never returns zero."""
+    differences = np.ones(30)
+    first = paired_sign_flip_pvalue(
+        differences,
+        samples=999,
+        rng=np.random.default_rng(11),
+    )
+    second = paired_sign_flip_pvalue(
+        differences,
+        samples=999,
+        rng=np.random.default_rng(11),
+    )
+
+    assert first == second
+    assert first >= 1 / 1000
 
 
 def test_lower_distance_is_encoded_as_positive_improvement():
@@ -54,7 +271,7 @@ def test_lower_distance_is_encoded_as_positive_improvement():
                     "method": "et1_raw",
                     "human_spearman": 0.1,
                     "js_divergence": 0.4,
-                    "wasserstein": 0.3,
+                    "word_order_wasserstein": 0.3,
                     "ob1_spearman": 0.2,
                 },
                 {
@@ -63,7 +280,7 @@ def test_lower_distance_is_encoded_as_positive_improvement():
                     "method": "et1_asymmetric",
                     "human_spearman": 0.2,
                     "js_divergence": 0.3,
-                    "wasserstein": 0.1,
+                    "word_order_wasserstein": 0.1,
                     "ob1_spearman": 0.25,
                 },
             ]
@@ -74,10 +291,13 @@ def test_lower_distance_is_encoded_as_positive_improvement():
         seed=1,
     )
 
-    wasserstein = contrasts.query(
-        "candidate == 'et1_asymmetric' and metric == 'wasserstein'"
+    word_order_distance = contrasts.query(
+        "candidate == 'et1_asymmetric' "
+        "and metric == 'word_order_wasserstein'"
     ).iloc[0]
-    assert wasserstein["mean_paired_improvement"] == pytest.approx(0.2)
+    assert word_order_distance["mean_paired_improvement"] == pytest.approx(0.2)
+    assert "permutation_p_two_sided" in contrasts
+    assert "bootstrap_p_two_sided" not in contrasts
 
 
 def test_asymmetric_is_directly_compared_with_symmetric():
@@ -92,7 +312,7 @@ def test_asymmetric_is_directly_compared_with_symmetric():
                     "method": "et1_raw",
                     "human_spearman": 0.1,
                     "js_divergence": 0.5,
-                    "wasserstein": 0.4,
+                    "word_order_wasserstein": 0.4,
                     "ob1_spearman": 0.1,
                 },
                 {
@@ -101,7 +321,7 @@ def test_asymmetric_is_directly_compared_with_symmetric():
                     "method": "et1_symmetric",
                     "human_spearman": 0.2,
                     "js_divergence": 0.4,
-                    "wasserstein": 0.3,
+                    "word_order_wasserstein": 0.3,
                     "ob1_spearman": 0.2,
                 },
                 {
@@ -110,7 +330,7 @@ def test_asymmetric_is_directly_compared_with_symmetric():
                     "method": "et1_asymmetric",
                     "human_spearman": 0.3,
                     "js_divergence": 0.2,
-                    "wasserstein": 0.1,
+                    "word_order_wasserstein": 0.1,
                     "ob1_spearman": 0.4,
                 },
             ]
@@ -142,7 +362,7 @@ def test_checkpoint_summary_keeps_each_rm_seed_separate():
                     "method": "et1_raw",
                     "human_spearman": value,
                     "js_divergence": 0.1,
-                    "wasserstein": 0.2,
+                    "word_order_wasserstein": 0.2,
                     "ob1_spearman": 0.3,
                 }
             )
@@ -157,3 +377,328 @@ def test_checkpoint_summary_keeps_each_rm_seed_separate():
         "seed41",
         "human_spearman",
     ] == pytest.approx(0.2)
+
+
+def test_cluster_aware_summary_resamples_whole_clusters():
+    """Optional cluster labels are accepted without changing the point mean."""
+    rows = []
+    for passage_id, cluster, value in (
+        (0, "document-a", 0.1),
+        (1, "document-a", 0.3),
+        (2, "document-b", 0.7),
+        (3, "document-b", 0.9),
+    ):
+        rows.append(
+            {
+                "checkpoint_id": "seed",
+                "passage_id_zero_based": passage_id,
+                "method": "et1_raw",
+                "document_id": cluster,
+                "human_spearman": value,
+                "js_divergence": value,
+                "word_order_wasserstein": value,
+                "ob1_spearman": value,
+            }
+        )
+
+    summary = summarize_methods(
+        pd.DataFrame(rows),
+        bootstrap_samples=100,
+        seed=3,
+        cluster_column="document_id",
+    )
+
+    assert summary.loc[0, "clusters"] == 2
+    assert summary.loc[0, "human_spearman"] == pytest.approx(0.5)
+
+
+def test_conditional_human_missing_words_are_masked_for_every_array():
+    """Conditional NaNs remove the same word from Human, ET1, and OB1."""
+    word_values = _passage_word_values(
+        human_unconditional=[1.0, 2.0, 3.0, 4.0],
+        human_conditional=[1.0, np.nan, 3.0, 4.0],
+    )
+    word_values.loc[1, "et1_raw_word_trt"] = np.nan
+    word_values.loc[1, "et1_symmetric_word_trt"] = 999.0
+    word_values.loc[1, "et1_asymmetric_word_trt"] = 999.0
+    word_values.loc[1, "ob1_tvt"] = 999.0
+
+    metrics = evaluate_passages(
+        word_values,
+        human_column="human_trt_conditional",
+    )
+
+    assert len(metrics) == 4
+    assert set(metrics["original_word_count"]) == {4}
+    assert set(metrics["word_count"]) == {3}
+    assert set(metrics["human_missing_words_excluded"]) == {1}
+    assert metrics["human_spearman"].tolist() == pytest.approx([1.0] * 4)
+    assert metrics["ob1_spearman"].tolist() == pytest.approx([1.0] * 4)
+
+
+def test_ob1_incompatible_words_are_common_masked_before_metrics():
+    """Punctuation-only OB1 positions are excluded from every comparison."""
+    word_values = _passage_word_values(
+        human_unconditional=[1.0, 999.0, 3.0, 4.0],
+        human_conditional=[1.0, 999.0, 3.0, 4.0],
+    )
+    word_values["ob1_evaluable"] = [True, False, True, True]
+    for column in (
+        "et1_raw_word_trt",
+        "et1_symmetric_word_trt",
+        "et1_asymmetric_word_trt",
+        "ob1_tvt",
+    ):
+        word_values.loc[1, column] = -999.0
+
+    metrics = evaluate_passages(word_values)
+
+    assert set(metrics["original_word_count"]) == {4}
+    assert set(metrics["ob1_compatible_word_count"]) == {3}
+    assert set(metrics["ob1_incompatible_words_excluded"]) == {1}
+    assert set(metrics["word_count"]) == {3}
+    assert metrics["human_spearman"].tolist() == pytest.approx([1.0] * 4)
+
+
+def test_ob1_clean_passage_sensitivity_filters_complete_passages():
+    """Any passage containing an OB1-incompatible word is fully excluded."""
+    passage_metrics = pd.DataFrame(
+        {
+            "passage_id_zero_based": [0, 0, 1, 1, 2, 2],
+            "method": [
+                "et1_raw",
+                "ob1",
+                "et1_raw",
+                "ob1",
+                "et1_raw",
+                "ob1",
+            ],
+            "ob1_incompatible_words_excluded": [0, 0, 2, 2, 0, 0],
+        }
+    )
+
+    clean, audit = select_ob1_clean_passages(passage_metrics)
+
+    assert set(clean["passage_id_zero_based"]) == {0, 2}
+    assert audit["source_passages"] == 3
+    assert audit["included_passages"] == 2
+    assert audit["excluded_passages"] == 1
+    assert audit["excluded_passage_ids"] == [1]
+    assert audit["source_ob1_incompatible_words"] == 2
+    assert audit["included_passage_metric_rows"] == 4
+    assert audit["sensitivity_policy"] == (
+        "exclude_passages_with_any_ob1_incompatible_word"
+    )
+
+
+def test_ob1_clean_passage_sensitivity_rejects_inconsistent_counts():
+    """One passage must have the same incompatibility count in every row."""
+    passage_metrics = pd.DataFrame(
+        {
+            "passage_id_zero_based": [0, 0],
+            "ob1_incompatible_words_excluded": [0, 1],
+        }
+    )
+
+    with pytest.raises(ValueError, match="differ within passages"):
+        select_ob1_clean_passages(passage_metrics)
+
+
+def test_merge_rejects_balanced_missing_and_duplicate_et1_coordinates():
+    """A duplicate cannot conceal a missing checkpoint-word prediction."""
+    canonical = pd.DataFrame(
+        {
+            "passage_id_raw": [1, 1],
+            "passage_id_zero_based": [0, 0],
+            "word_id_zero_based": [0, 1],
+            "word_raw": ["one", "two"],
+            "human_trt_unconditional": [1.0, 2.0],
+            "human_trt_conditional": [1.0, 2.0],
+        }
+    )
+    et1 = pd.DataFrame(
+        {
+            "checkpoint_id": ["seed-a", "seed-a", "seed-b", "seed-b"],
+            "passage_id_zero_based": [0, 0, 0, 0],
+            "word_id_zero_based": [0, 0, 0, 1],
+            "et1_raw_word_trt": [1.0, 1.0, 1.0, 2.0],
+            "et1_symmetric_word_trt": [1.0, 1.0, 1.0, 2.0],
+            "et1_asymmetric_word_trt": [1.0, 1.0, 1.0, 2.0],
+        }
+    )
+    ob1 = pd.DataFrame(
+        {
+            "passage_id_zero_based": [0, 0],
+            "word_id_zero_based": [0, 1],
+            "ob1_tvt": [1.0, 2.0],
+        }
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Duplicate ET1 checkpoint-word coordinates",
+    ):
+        merge_word_values(canonical, et1, ob1)
+
+
+def test_merge_rejects_duplicate_ob1_coordinates():
+    """OB1 duplicates are rejected before a many-to-one merge."""
+    canonical, et1, ob1 = _complete_merge_inputs()
+    ob1 = pd.concat([ob1, ob1.iloc[[0]]], ignore_index=True)
+
+    with pytest.raises(ValueError, match="Duplicate OB1 word coordinates"):
+        merge_word_values(canonical, et1, ob1)
+
+
+def test_merge_rejects_missing_ob1_coordinates():
+    """OB1 must contain every canonical evaluation coordinate."""
+    canonical, et1, ob1 = _complete_merge_inputs()
+    ob1 = ob1.iloc[:-1].copy()
+
+    with pytest.raises(
+        ValueError,
+        match=r"OB1 coordinate grid differs.*missing=1, extra=0",
+    ):
+        merge_word_values(canonical, et1, ob1)
+
+
+def test_merge_rejects_extra_ob1_coordinates():
+    """OB1 coordinates outside the canonical evaluation grid are rejected."""
+    canonical, et1, ob1 = _complete_merge_inputs()
+    extra = pd.DataFrame(
+        {
+            "passage_id_zero_based": [0],
+            "word_id_zero_based": [2],
+            "ob1_tvt": [3.0],
+        }
+    )
+    ob1 = pd.concat([ob1, extra], ignore_index=True)
+
+    with pytest.raises(
+        ValueError,
+        match=r"OB1 coordinate grid differs.*missing=0, extra=1",
+    ):
+        merge_word_values(canonical, et1, ob1)
+
+
+def test_merge_rejects_missing_et1_checkpoint_coordinates():
+    """Every ET1 checkpoint must cover the complete canonical word grid."""
+    canonical, et1, ob1 = _complete_merge_inputs()
+    et1 = et1.loc[
+        ~(
+            et1["checkpoint_id"].eq("seed-a")
+            & et1["word_id_zero_based"].eq(1)
+        )
+    ].copy()
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"ET1 coordinate grid differs.*checkpoint seed-a: "
+            r"missing=1, extra=0"
+        ),
+    ):
+        merge_word_values(canonical, et1, ob1)
+
+
+def test_merge_rejects_extra_et1_checkpoint_coordinates():
+    """No ET1 checkpoint may contain words outside the canonical grid."""
+    canonical, et1, ob1 = _complete_merge_inputs()
+    extra = et1.iloc[[0]].copy()
+    extra["word_id_zero_based"] = 2
+    et1 = pd.concat([et1, extra], ignore_index=True)
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"ET1 coordinate grid differs.*checkpoint seed-a: "
+            r"missing=0, extra=1"
+        ),
+    ):
+        merge_word_values(canonical, et1, ob1)
+
+
+def test_partial_et1_method_missingness_is_rejected():
+    """A retained NaN cannot silently remove one passage from a method."""
+    word_values = _passage_word_values(
+        human_unconditional=[1.0, 2.0, 3.0],
+        human_conditional=[1.0, 2.0, 3.0],
+    )
+    word_values.loc[1, "et1_asymmetric_word_trt"] = np.nan
+
+    with pytest.raises(ValueError, match="only partially missing"):
+        evaluate_passages(word_values)
+
+
+def test_raw_only_checkpoint_skips_fully_unavailable_redistributions():
+    """The documented raw-only ET1 path still evaluates raw ET1 and OB1."""
+    word_values = _passage_word_values(
+        human_unconditional=[1.0, 2.0, 3.0],
+        human_conditional=[1.0, 2.0, 3.0],
+    )
+    word_values["et1_symmetric_word_trt"] = np.nan
+    word_values["et1_asymmetric_word_trt"] = np.nan
+
+    metrics = evaluate_passages(word_values)
+
+    assert set(metrics["method"]) == {"et1_raw", "ob1"}
+
+
+@pytest.mark.parametrize("invalid_value", [np.nan, np.inf, -np.inf])
+def test_unconditional_human_rejects_missing_or_nonfinite_values(invalid_value):
+    """The primary unconditional Human target must be complete and finite."""
+    word_values = _passage_word_values(
+        human_unconditional=[1.0, invalid_value, 3.0],
+        human_conditional=[1.0, 2.0, 3.0],
+    )
+
+    with pytest.raises(ValueError, match="missing or non-finite"):
+        evaluate_passages(
+            word_values,
+            human_column="human_trt_unconditional",
+        )
+
+
+@pytest.mark.parametrize("invalid_value", [np.inf, -np.inf])
+def test_conditional_human_rejects_infinities(invalid_value):
+    """Conditional masking permits NaN only, never positive or negative infinity."""
+    word_values = _passage_word_values(
+        human_unconditional=[1.0, 2.0, 3.0],
+        human_conditional=[1.0, invalid_value, 3.0],
+    )
+
+    with pytest.raises(ValueError, match="contains infinity"):
+        evaluate_passages(
+            word_values,
+            human_column="human_trt_conditional",
+        )
+
+
+@pytest.mark.parametrize("column", ["et1_raw_word_trt", "ob1_tvt"])
+def test_conditional_evaluated_model_values_reject_infinity(column):
+    """Infinity in any retained prediction array remains a hard error."""
+    word_values = _passage_word_values(
+        human_unconditional=[1.0, 2.0, 3.0],
+        human_conditional=[1.0, np.nan, 3.0],
+    )
+    word_values.loc[2, column] = np.inf
+
+    with pytest.raises(ValueError, match="non-finite"):
+        evaluate_passages(
+            word_values,
+            human_column="human_trt_conditional",
+        )
+
+
+def test_conditional_human_requires_two_evaluable_words():
+    """A passage cannot be evaluated after masking down to fewer than two words."""
+    word_values = _passage_word_values(
+        human_unconditional=[1.0, 2.0, 3.0],
+        human_conditional=[np.nan, np.nan, 3.0],
+    )
+
+    with pytest.raises(ValueError, match="leaves fewer than two words"):
+        evaluate_passages(
+            word_values,
+            human_column="human_trt_conditional",
+        )

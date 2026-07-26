@@ -50,6 +50,7 @@ training_args.bin
 /cognitive_model_comparsion/data/processed/*
 !/cognitive_model_comparsion/data/processed/README.md
 /cognitive_model_comparsion/data/ob1_runtime/
+/cognitive_model_comparsion/data/ob1_runtime_onestop/
 /cognitive_model_comparsion/data/runtime_cache/
 /cognitive_model_comparsion/outputs/*
 !/cognitive_model_comparsion/outputs/README.md

@@ -1,16 +1,18 @@
-"""Prepare, execute, and aggregate the pinned OB1 Provo baseline."""
+"""Prepare, execute, and aggregate the pinned OB1 reading baseline."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 
@@ -19,14 +21,39 @@ VENDOR_ROOT = ROOT / "third_party/ob1_reader_provo_2024"
 OB1_SOURCE_COMMIT = "56b8d6401d1c2c1886a9c6ff9df4a143c6f2c12d"
 WORKER_PATH = ROOT / "src/ob1_worker.py"
 DEFAULT_RUNTIME_DIR = ROOT / "data/ob1_runtime"
+DEFAULT_ONESTOP_RUNTIME_DIR = ROOT / "data/ob1_runtime_onestop"
 SUBTLEX_PATH = ROOT / "data/raw/SUBTLEX_UK.txt"
-DERIVED_CACHE_FILENAMES = (
-    "lexicon.pkl",
-    "frequency_map_Provo_Corpus_continuous_reading_english.json",
-    "prediction_map_Provo_Corpus__continuous_reading_english.json",
-    "inhibition_matrix_previous.pkl",
-    "inhibition_matrix_parameters_previous.pkl",
-)
+TOKEN_TRANSFORMATION_REASON = "punctuation_only_ob1_empty_token"
+
+
+def validate_stimulus_name(stimulus_name: str) -> str:
+    """Validate a stable filename stem passed into the isolated OB1 runtime."""
+    if not re.fullmatch(r"[A-Za-z0-9_]+", stimulus_name):
+        raise ValueError(
+            "OB1 stimulus_name may contain only letters, digits, and underscores"
+        )
+    return stimulus_name
+
+
+def derived_cache_filenames(stimulus_name: str) -> tuple[str, ...]:
+    """Return every upstream cache derived from one named stimulus table."""
+    stimulus_name = validate_stimulus_name(stimulus_name)
+    return (
+        "lexicon.pkl",
+        (
+            f"frequency_map_{stimulus_name}_"
+            "continuous_reading_english.json"
+        ),
+        (
+            f"prediction_map_{stimulus_name}__"
+            "continuous_reading_english.json"
+        ),
+        "inhibition_matrix_previous.pkl",
+        "inhibition_matrix_parameters_previous.pkl",
+    )
+
+
+DERIVED_CACHE_FILENAMES = derived_cache_filenames("Provo_Corpus")
 
 
 def sha256_file(path: Path) -> str:
@@ -38,13 +65,109 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def transform_ob1_passage(
+    passage_id_zero_based: int,
+    text: str,
+) -> tuple[str, list[dict]]:
+    """Replace OB1-empty whitespace tokens while preserving text coordinates."""
+    records = []
+    word_id = -1
+
+    def replace(match: re.Match) -> str:
+        """Return one unchanged lexical token or a length-preserving surrogate."""
+        nonlocal word_id
+        word_id += 1
+        token = match.group(0)
+        normalized = re.sub(r"[^\w\s]", "", token).lower().strip()
+        if normalized:
+            return token
+        surrogate = "x" * max(1, len(token))
+        records.append(
+            {
+                "passage_id_zero_based": int(passage_id_zero_based),
+                "word_id_zero_based": int(word_id),
+                "word_raw": token,
+                "ob1_word": surrogate,
+                "reason": TOKEN_TRANSFORMATION_REASON,
+            }
+        )
+        return surrogate
+
+    transformed = re.sub(r"\S+", replace, str(text))
+    if len(transformed) != len(str(text)):
+        raise ValueError("OB1 token transformation changed passage length")
+    if len(transformed.split()) != len(str(text).split()):
+        raise ValueError("OB1 token transformation changed whitespace token count")
+    return transformed, records
+
+
+def validate_ob1_passages(passages: pd.DataFrame) -> pd.DataFrame:
+    """Require the row-index coordinate system used by upstream OB1."""
+    required = {"passage_id_zero_based", "passage_text"}
+    missing = required.difference(passages.columns)
+    if missing:
+        raise ValueError(
+            f"OB1 passages are missing columns: {sorted(missing)}"
+        )
+    if passages.empty:
+        raise ValueError("OB1 passages must not be empty")
+    if passages[list(required)].isna().any().any():
+        raise ValueError("OB1 passages contain missing IDs or text")
+
+    passage_ids = pd.to_numeric(
+        passages["passage_id_zero_based"],
+        errors="coerce",
+    )
+    if (
+        passage_ids.isna().any()
+        or not bool(np.isfinite(passage_ids).all())
+        or not bool((passage_ids == np.floor(passage_ids)).all())
+    ):
+        raise ValueError("OB1 passage IDs must be finite integers")
+    passage_ids = passage_ids.astype(int)
+    expected_ids = list(range(len(passages)))
+    if sorted(passage_ids.tolist()) != expected_ids:
+        raise ValueError(
+            "OB1 passage IDs must be unique and contiguous from zero because "
+            "upstream OB1 emits row-position text IDs"
+        )
+    passage_text = passages["passage_text"].astype(str)
+    if bool(passage_text.map(lambda text: len(text.split()) == 0).any()):
+        raise ValueError("OB1 passages must contain at least one word")
+
+    validated = passages.copy()
+    validated["passage_id_zero_based"] = passage_ids
+    return validated.sort_values("passage_id_zero_based").reset_index(drop=True)
+
+
+def stimulus_word_coordinates(passages: pd.DataFrame) -> pd.DataFrame:
+    """Build the complete whitespace-token coordinate grid simulated by OB1."""
+    validated = validate_ob1_passages(passages)
+    records = []
+    for passage in validated.itertuples():
+        passage_id = int(passage.passage_id_zero_based)
+        records.extend(
+            {
+                "passage_id_zero_based": passage_id,
+                "word_id_zero_based": word_id,
+            }
+            for word_id, _ in enumerate(str(passage.passage_text).split())
+        )
+    return pd.DataFrame(
+        records,
+        columns=["passage_id_zero_based", "word_id_zero_based"],
+    )
+
+
 def prepare_ob1_runtime(
     passages: pd.DataFrame,
     runtime_dir: Path,
     subtlex_path: Path = SUBTLEX_PATH,
     python_hash_seed: int = 20260725,
+    stimulus_name: str = "Provo_Corpus",
 ) -> dict:
     """Create the exact file layout required by the unmodified OB1 code."""
+    stimulus_name = validate_stimulus_name(stimulus_name)
     runtime_dir = runtime_dir.resolve()
     source_working_dir = runtime_dir / "src"
     raw_dir = runtime_dir / "data/raw"
@@ -60,22 +183,46 @@ def prepare_ob1_runtime(
     ):
         shutil.copyfile(subtlex_path, subtlex_destination)
 
-    stimuli = passages.sort_values("passage_id_zero_based").copy()
+    stimuli = validate_ob1_passages(passages)
+    transformed_texts = []
+    transformation_records = []
+    for passage in stimuli.itertuples():
+        transformed_text, records = transform_ob1_passage(
+            int(passage.passage_id_zero_based),
+            str(passage.passage_text),
+        )
+        transformed_texts.append(transformed_text)
+        transformation_records.extend(records)
+    transformation_columns = [
+        "passage_id_zero_based",
+        "word_id_zero_based",
+        "word_raw",
+        "ob1_word",
+        "reason",
+    ]
+    transformations = pd.DataFrame(
+        transformation_records,
+        columns=transformation_columns,
+    )
+    transformations_path = (
+        processed_dir / f"{stimulus_name}_token_transformations.csv"
+    )
+    transformations.to_csv(transformations_path, index=False)
     stimuli_frame = pd.DataFrame(
         {
             "id": stimuli["passage_id_zero_based"].astype(int),
-            "all": stimuli["passage_text"],
+            "all": transformed_texts,
             "words": [
                 [item for item in str(text).split()]
-                for text in stimuli["passage_text"]
+                for text in transformed_texts
             ],
             "word_ids": [
                 list(range(len(str(text).split())))
-                for text in stimuli["passage_text"]
+                for text in transformed_texts
             ],
         }
     )
-    stimuli_path = processed_dir / "Provo_Corpus.csv"
+    stimuli_path = processed_dir / f"{stimulus_name}.csv"
     stimuli_frame.to_csv(stimuli_path, sep="\t", index=False)
     input_manifest_path = processed_dir / "runtime_input_manifest.json"
     input_manifest = {
@@ -84,6 +231,10 @@ def prepare_ob1_runtime(
         "passages": len(stimuli_frame),
         "python_hash_seed": int(python_hash_seed),
         "vendor_commit": OB1_SOURCE_COMMIT,
+        "stimulus_name": stimulus_name,
+        "token_transformations_filename": transformations_path.name,
+        "token_transformations_sha256": sha256_file(transformations_path),
+        "token_transformations": len(transformations),
     }
     previous_manifest = None
     if input_manifest_path.is_file():
@@ -91,7 +242,7 @@ def prepare_ob1_runtime(
             previous_manifest = json.load(handle)
     removed_caches = []
     if previous_manifest != input_manifest:
-        for filename in DERIVED_CACHE_FILENAMES:
+        for filename in derived_cache_filenames(stimulus_name):
             cache_path = processed_dir / filename
             if cache_path.is_file():
                 cache_path.unlink()
@@ -103,8 +254,14 @@ def prepare_ob1_runtime(
         "runtime_dir": str(runtime_dir),
         "source_working_dir": str(source_working_dir),
         "stimuli_path": str(stimuli_path),
+        "token_transformations_path": str(transformations_path),
+        "token_transformations_sha256": input_manifest[
+            "token_transformations_sha256"
+        ],
         "subtlex_path": str(subtlex_destination),
         "passages": len(stimuli_frame),
+        "token_transformations": len(transformations),
+        "stimulus_name": stimulus_name,
         "vendor_source": str(VENDOR_ROOT.resolve()),
         "vendor_commit": OB1_SOURCE_COMMIT,
         "input_manifest": input_manifest,
@@ -119,8 +276,10 @@ def run_ob1_subprocess(
     n_trials: int = 55,
     python_hash_seed: int = 20260725,
     workers: int = 1,
+    stimulus_name: str = "Provo_Corpus",
 ) -> None:
     """Run fixed-hash OB1 workers and merge their deterministic outputs."""
+    stimulus_name = validate_stimulus_name(stimulus_name)
     if not seeds:
         raise ValueError("At least one OB1 virtual-reader seed is required")
     if len(set(seeds)) != len(seeds):
@@ -138,12 +297,13 @@ def run_ob1_subprocess(
             seeds,
             n_trials,
             python_hash_seed,
+            stimulus_name,
         )
         return
 
     cache_ready = all(
         (runtime_dir / "data/processed" / filename).is_file()
-        for filename in DERIVED_CACHE_FILENAMES
+        for filename in derived_cache_filenames(stimulus_name)
     )
     completed_chunks = []
     remaining_seeds = list(seeds)
@@ -159,6 +319,7 @@ def run_ob1_subprocess(
             [warmup_seed],
             n_trials,
             python_hash_seed,
+            stimulus_name,
         )
         completed_chunks.append(([warmup_seed], warmup_dir))
 
@@ -177,6 +338,7 @@ def run_ob1_subprocess(
                 chunk,
                 n_trials,
                 python_hash_seed,
+                stimulus_name,
             )
             for chunk, chunk_dir in parallel_chunks
         ]
@@ -190,6 +352,7 @@ def run_ob1_subprocess(
         completed_chunks,
         workers_requested=workers,
         python_hash_seed=python_hash_seed,
+        stimulus_name=stimulus_name,
     )
 
 
@@ -224,10 +387,12 @@ def run_ob1_worker(
     seeds: list[int],
     n_trials: int,
     python_hash_seed: int,
+    stimulus_name: str = "Provo_Corpus",
 ) -> None:
     """Run one isolated OB1 subprocess for an explicit seed chunk."""
     if not seeds:
         raise ValueError("An OB1 worker cannot receive an empty seed chunk")
+    stimulus_name = validate_stimulus_name(stimulus_name)
     command = [
         sys.executable,
         str(WORKER_PATH),
@@ -241,6 +406,8 @@ def run_ob1_worker(
         ",".join(map(str, seeds)),
         "--n-trials",
         str(n_trials),
+        "--stimuli-filename",
+        f"{stimulus_name}.csv",
     ]
     subprocess.run(
         command,
@@ -255,8 +422,10 @@ def merge_ob1_worker_outputs(
     chunks: list[tuple[list[int], Path]],
     workers_requested: int,
     python_hash_seed: int,
+    stimulus_name: str = "Provo_Corpus",
 ) -> None:
     """Merge worker CSVs and manifests into the serial output contract."""
+    stimulus_name = validate_stimulus_name(stimulus_name)
     seed_to_simulation = {seed: index for index, seed in enumerate(seeds)}
     fixation_frames = []
     runtimes = []
@@ -289,6 +458,15 @@ def merge_ob1_worker_outputs(
 
         with manifest_path.open(encoding="utf-8") as handle:
             manifest = json.load(handle)
+        observed_stimulus = manifest.get(
+            "stimuli_filename",
+            "Provo_Corpus.csv",
+        )
+        if observed_stimulus != f"{stimulus_name}.csv":
+            raise ValueError(
+                f"OB1 worker stimulus mismatch in {chunk_dir}: "
+                f"{observed_stimulus}"
+            )
         if parameters is None:
             parameters = manifest["parameters"]
         elif manifest["parameters"] != parameters:
@@ -330,6 +508,7 @@ def merge_ob1_worker_outputs(
                 "parallel": True,
                 "workers_requested": workers_requested,
                 "worker_chunks": chunk_records,
+                "stimuli_filename": f"{stimulus_name}.csv",
             },
             handle,
             indent=2,
@@ -341,8 +520,10 @@ def merge_ob1_worker_outputs(
 def aggregate_ob1_tvt(
     fixations: pd.DataFrame,
     canonical_words: pd.DataFrame,
+    valid_fixation_coordinates: pd.DataFrame | None = None,
+    expected_seeds: list[int] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
-    """Sum all fixations per word, fill skips with zero, and average readers."""
+    """Aggregate TVT after validating full simulation and evaluation grids."""
     required = {
         "simulation_id",
         "seed",
@@ -353,10 +534,133 @@ def aggregate_ob1_tvt(
     missing = required.difference(fixations.columns)
     if missing:
         raise ValueError(f"OB1 fixation table is missing columns: {sorted(missing)}")
-    if (fixations["fixation_duration"] < 0).any():
+    canonical_required = {
+        "passage_id_raw",
+        "passage_id_zero_based",
+        "word_id_zero_based",
+        "word_raw",
+    }
+    missing_canonical = canonical_required.difference(canonical_words.columns)
+    if missing_canonical:
+        raise ValueError(
+            "Canonical word table is missing columns: "
+            f"{sorted(missing_canonical)}"
+        )
+    if fixations.empty:
+        raise ValueError("OB1 fixation table must not be empty")
+    if canonical_words.empty:
+        raise ValueError("Canonical word table must not be empty")
+    if fixations[list(required)].isna().any().any():
+        raise ValueError("OB1 fixation table contains missing required values")
+    durations = pd.to_numeric(
+        fixations["fixation_duration"],
+        errors="coerce",
+    )
+    if durations.isna().any() or not bool(np.isfinite(durations).all()):
+        raise ValueError("OB1 fixation durations must be finite")
+    if bool((durations < 0).any()):
         raise ValueError("OB1 fixation durations must be nonnegative")
+    fixations = fixations.copy()
+    fixations["fixation_duration"] = durations.astype(float)
+    durations = fixations["fixation_duration"]
+
+    canonical_coordinates = canonical_words[
+        ["passage_id_zero_based", "word_id_zero_based"]
+    ]
+    if canonical_coordinates.duplicated().any():
+        raise ValueError("Canonical OB1 word coordinates must be unique")
+    coordinate_columns = [
+        "passage_id_zero_based",
+        "word_id_zero_based",
+    ]
+    if valid_fixation_coordinates is None:
+        validation_coordinates = canonical_coordinates
+    else:
+        missing_valid_columns = set(coordinate_columns).difference(
+            valid_fixation_coordinates.columns
+        )
+        if missing_valid_columns:
+            raise ValueError(
+                "Valid fixation coordinate table is missing columns: "
+                f"{sorted(missing_valid_columns)}"
+            )
+        validation_coordinates = valid_fixation_coordinates[
+            coordinate_columns
+        ]
+        if validation_coordinates.duplicated().any():
+            raise ValueError("Valid OB1 fixation coordinates must be unique")
+        missing_output_coordinates = canonical_coordinates.merge(
+            validation_coordinates,
+            on=coordinate_columns,
+            how="left",
+            indicator=True,
+            validate="one_to_one",
+        )
+        missing_output_coordinates = missing_output_coordinates.loc[
+            missing_output_coordinates["_merge"] == "left_only",
+            coordinate_columns,
+        ]
+        if not missing_output_coordinates.empty:
+            examples = missing_output_coordinates.head(10).to_dict("records")
+            raise ValueError(
+                "Canonical evaluation coordinates are absent from the full "
+                f"OB1 stimulus grid: {examples}"
+            )
+    fixation_coordinates = (
+        fixations[["text_id", "word_id"]]
+        .drop_duplicates()
+        .rename(
+            columns={
+                "text_id": "passage_id_zero_based",
+                "word_id": "word_id_zero_based",
+            }
+        )
+    )
+    unknown_coordinates = fixation_coordinates.merge(
+        validation_coordinates,
+        on=coordinate_columns,
+        how="left",
+        indicator=True,
+        validate="one_to_one",
+    )
+    unknown_coordinates = unknown_coordinates.loc[
+        unknown_coordinates["_merge"] == "left_only",
+        ["passage_id_zero_based", "word_id_zero_based"],
+    ]
+    if not unknown_coordinates.empty:
+        examples = unknown_coordinates.head(10).to_dict("records")
+        raise ValueError(
+            "OB1 fixations reference coordinates outside the canonical "
+            f"word grid: {examples}"
+        )
+    output_coordinate_index = pd.MultiIndex.from_frame(
+        canonical_coordinates
+    )
+    fixation_coordinate_index = pd.MultiIndex.from_arrays(
+        [
+            fixations["text_id"].to_numpy(),
+            fixations["word_id"].to_numpy(),
+        ],
+        names=coordinate_columns,
+    )
+    fixation_in_output_grid = fixation_coordinate_index.isin(
+        output_coordinate_index
+    )
+    excluded_fixation_mask = ~np.asarray(fixation_in_output_grid, dtype=bool)
 
     simulation_ids = sorted(fixations["simulation_id"].unique().tolist())
+    simulation_seed_counts = fixations.groupby(
+        "simulation_id",
+        sort=False,
+    )["seed"].nunique(dropna=False)
+    if bool((simulation_seed_counts != 1).any()):
+        raise ValueError("Every simulation ID must map to exactly one seed")
+    seed_simulation_counts = fixations.groupby(
+        "seed",
+        sort=False,
+    )["simulation_id"].nunique(dropna=False)
+    if bool((seed_simulation_counts != 1).any()):
+        raise ValueError("Every OB1 seed must map to exactly one simulation ID")
     seed_map = (
         fixations[["simulation_id", "seed"]]
         .drop_duplicates()
@@ -365,6 +669,60 @@ def aggregate_ob1_tvt(
     )
     if len(seed_map) != len(simulation_ids):
         raise ValueError("Every simulation ID must map to exactly one seed")
+    if expected_seeds is not None:
+        requested_seeds = [int(seed) for seed in expected_seeds]
+        if not requested_seeds:
+            raise ValueError("Expected OB1 seeds must not be empty")
+        if len(set(requested_seeds)) != len(requested_seeds):
+            raise ValueError("Expected OB1 seeds must be unique")
+        expected_simulation_ids = list(range(len(requested_seeds)))
+        if simulation_ids != expected_simulation_ids:
+            raise ValueError(
+                "OB1 output simulation IDs do not cover every requested "
+                f"virtual reader: expected {expected_simulation_ids}, "
+                f"found {simulation_ids}"
+            )
+        observed_seeds = [
+            int(seed_map[simulation_id])
+            for simulation_id in expected_simulation_ids
+        ]
+        if observed_seeds != requested_seeds:
+            raise ValueError(
+                "OB1 output seed order differs from the requested virtual "
+                f"readers: expected {requested_seeds}, found {observed_seeds}"
+            )
+
+    canonical_passages = (
+        canonical_coordinates[["passage_id_zero_based"]]
+        .drop_duplicates()
+        .sort_values("passage_id_zero_based")
+    )
+    expected_coverage = pd.MultiIndex.from_product(
+        [simulation_ids, canonical_passages["passage_id_zero_based"]],
+        names=["simulation_id", "passage_id_zero_based"],
+    ).to_frame(index=False)
+    observed_coverage = (
+        fixations[["simulation_id", "text_id"]]
+        .drop_duplicates()
+        .rename(columns={"text_id": "passage_id_zero_based"})
+    )
+    coverage = expected_coverage.merge(
+        observed_coverage,
+        on=["simulation_id", "passage_id_zero_based"],
+        how="left",
+        indicator=True,
+        validate="one_to_one",
+    )
+    missing_coverage = coverage.loc[
+        coverage["_merge"] == "left_only",
+        ["simulation_id", "passage_id_zero_based"],
+    ]
+    if not missing_coverage.empty:
+        examples = missing_coverage.head(10).to_dict("records")
+        raise ValueError(
+            "OB1 output is missing every fixation for canonical "
+            f"simulation-passage pairs: {examples}"
+        )
 
     grids = []
     canonical = canonical_words[
@@ -429,6 +787,21 @@ def aggregate_ob1_tvt(
         "virtual_readers": len(simulation_ids),
         "seeds": [int(seed_map[item]) for item in simulation_ids],
         "fixations": len(fixations),
+        "fixations_outside_evaluation_grid": int(
+            excluded_fixation_mask.sum()
+        ),
+        "fixation_duration_outside_evaluation_grid": float(
+            durations.loc[excluded_fixation_mask].sum()
+        ),
+        "fixation_coordinates_outside_evaluation_grid": int(
+            fixation_coordinates.merge(
+                canonical_coordinates,
+                on=coordinate_columns,
+                how="left",
+                indicator=True,
+                validate="one_to_one",
+            )["_merge"].eq("left_only").sum()
+        ),
         "per_simulation_word_rows": len(per_simulation),
         "mean_word_rows": len(mean_values),
         "zero_tvt_rows": int((per_simulation["ob1_tvt"] == 0).sum()),
@@ -445,7 +818,7 @@ def aggregate_ob1_tvt(
             f"found {len(per_simulation)}"
         )
     if len(mean_values) != len(canonical_words):
-        raise ValueError("OB1 mean grid does not match canonical Provo grid")
+        raise ValueError("OB1 mean grid does not match the canonical word grid")
     return per_simulation, mean_values, audit
 
 

@@ -1,4 +1,4 @@
-"""Download and verify the exact Provo, OB1, and ET2 reference assets."""
+"""Download and verify the exact Provo, OneStop, OB1, and ET assets."""
 
 from __future__ import annotations
 
@@ -121,6 +121,52 @@ def verify_tree(destination: Path, sentinels: tuple[str, ...], label: str) -> No
         )
 
 
+def verify_tree_against_archive(
+    archive_path: Path,
+    destination: Path,
+    label: str,
+) -> None:
+    """Verify every archived regular file against the extracted source tree."""
+    with tarfile.open(archive_path, "r:gz") as archive:
+        archive_root = validate_tar_members(archive)
+        checked_files = 0
+        for member in archive.getmembers():
+            if not member.isfile():
+                continue
+            member_path = PurePosixPath(member.name)
+            if not member_path.parts or member_path.parts[0] != archive_root:
+                raise ValueError(
+                    f"{label} archive member has unexpected root: "
+                    f"{member.name}"
+                )
+            relative_path = Path(*member_path.parts[1:])
+            extracted_path = destination / relative_path
+            if not extracted_path.is_file():
+                raise FileNotFoundError(
+                    f"{label} extracted file is missing: {relative_path}"
+                )
+            archived_handle = archive.extractfile(member)
+            if archived_handle is None:
+                raise ValueError(
+                    f"{label} archive file cannot be read: {member.name}"
+                )
+            archived_digest = hashlib.sha256()
+            for chunk in iter(
+                lambda: archived_handle.read(1024 * 1024),
+                b"",
+            ):
+                archived_digest.update(chunk)
+            extracted_digest = sha256_file(extracted_path)
+            if extracted_digest != archived_digest.hexdigest():
+                raise ValueError(
+                    f"{label} extracted file differs from pinned archive: "
+                    f"{relative_path}"
+                )
+            checked_files += 1
+    if checked_files == 0:
+        raise ValueError(f"{label} archive contains no regular files")
+
+
 def extract_tree(
     archive_path: Path,
     destination: Path,
@@ -130,6 +176,7 @@ def extract_tree(
     """Extract a pinned source archive without overwriting an existing tree."""
     if destination.exists():
         verify_tree(destination, sentinels, label)
+        verify_tree_against_archive(archive_path, destination, label)
         print(f"verified {destination.relative_to(ROOT)}")
         return
 
@@ -144,6 +191,11 @@ def extract_tree(
             archive.extractall(temporary_root, filter="data")
         extracted_root = temporary_root / archive_root
         verify_tree(extracted_root, sentinels, label)
+        verify_tree_against_archive(
+            archive_path,
+            extracted_root,
+            label,
+        )
         extracted_root.replace(destination)
     print(f"extracted {destination.relative_to(ROOT)}")
 
@@ -221,6 +273,11 @@ def verify_source_archive(asset: dict, asset_name: str, label: str) -> None:
         TREE_SENTINELS[asset_name],
         label,
     )
+    verify_tree_against_archive(
+        ROOT / asset["archive_destination"],
+        ROOT / asset["extract_destination"],
+        label,
+    )
     print(f"verified {asset['archive_destination']}")
     print(f"verified {asset['extract_destination']}")
 
@@ -248,6 +305,14 @@ def verify_assets(selected: str) -> None:
                 asset["sha256"],
             )
             print(f"verified {asset['destination']}")
+    if selected in {"all", "onestop"}:
+        asset = assets["onestop_ordinary_interest_areas"]
+        verify_file(
+            ROOT / asset["destination"],
+            asset["bytes"],
+            asset["sha256"],
+        )
+        print(f"verified {asset['destination']}")
     if selected in {"all", "ob1"}:
         verify_source_archive(assets["ob1_provo_2024"], "ob1_provo_2024", "OB1")
     if selected in {"all", "et2-reference"}:
@@ -266,6 +331,11 @@ def download_assets(selected: str) -> None:
     if selected in {"all", "provo"}:
         for name in ("provo_eye_tracking", "provo_predictability"):
             download_file(assets[name], "destination")
+    if selected in {"all", "onestop"}:
+        download_file(
+            assets["onestop_ordinary_interest_areas"],
+            "destination",
+        )
     if selected in {"all", "ob1"}:
         download_source_archive(assets["ob1_provo_2024"], "ob1_provo_2024", "OB1")
     if selected in {"all", "et2-reference"}:
@@ -285,7 +355,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--asset",
-        choices=("all", "provo", "ob1", "et2-reference", "subtlex"),
+        choices=(
+            "all",
+            "provo",
+            "onestop",
+            "ob1",
+            "et2-reference",
+            "subtlex",
+        ),
         default="all",
     )
     parser.add_argument("--verify-only", action="store_true")

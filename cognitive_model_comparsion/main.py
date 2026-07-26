@@ -39,22 +39,34 @@ from cognitive_model_comparsion.src.evaluate import (
     evaluate_passages,
     merge_word_values,
     paired_contrasts,
+    select_ob1_clean_passages,
     summarize_methods,
     summarize_methods_by_checkpoint,
     write_evaluation_outputs,
 )
 from cognitive_model_comparsion.src.ob1_runner import (
+    DEFAULT_ONESTOP_RUNTIME_DIR,
     DEFAULT_RUNTIME_DIR,
     aggregate_ob1_tvt,
     prepare_ob1_runtime,
     run_ob1_subprocess,
+    stimulus_word_coordinates,
     write_ob1_aggregation,
+)
+from cognitive_model_comparsion.src.prepare_onestop import (
+    DEFAULT_CHUNK_SIZE as ONESTOP_DEFAULT_CHUNK_SIZE,
+    ONESTOP_ZIP_FILENAME,
+    RAW_DIR as ONESTOP_RAW_DIR,
+    build_onestop_tables,
+    validate_loaded_onestop_model_tables,
+    write_onestop_tables,
 )
 from cognitive_model_comparsion.src.prepare_provo import (
     EYE_FILENAME,
     PREDICTABILITY_FILENAME,
-    RAW_DIR,
+    RAW_DIR as PROVO_RAW_DIR,
     build_canonical_tables,
+    validate_canonical_tables,
     write_canonical_tables,
 )
 from cognitive_model_comparsion.src.sigmas import (
@@ -64,7 +76,19 @@ from cognitive_model_comparsion.src.sigmas import (
 
 
 DEFAULT_PROCESSED_DIR = ROOT / "data/processed"
+DEFAULT_ONESTOP_PROCESSED_DIR = ROOT / "data/processed/onestop"
 DEFAULT_OUTPUT_DIR = ROOT / "outputs/full_run"
+DEFAULT_ONESTOP_OUTPUT_DIR = ROOT / "outputs/onestop_full_run"
+CORPORA = ("provo", "onestop")
+CORPUS_FILENAMES = {
+    "provo": ("provo_passages.csv", "provo_words.csv"),
+    "onestop": ("onestop_passages.csv", "onestop_words.csv"),
+}
+CORPUS_STIMULUS_NAMES = {
+    "provo": "Provo_Corpus",
+    "onestop": "OneStop_Ordinary_Advanced",
+}
+OB1_CLEAN_SENSITIVITY_DIRECTORY = "ob1_clean_passages"
 
 
 def parse_seed_specification(value: str) -> list[int]:
@@ -83,10 +107,46 @@ def parse_seed_specification(value: str) -> list[int]:
     return seeds
 
 
-def validate_trial_count(n_trials: int) -> None:
-    """Require a nonempty prefix of the 55 published Provo passages."""
-    if not 1 <= n_trials <= 55:
-        raise ValueError("--n-trials must be between 1 and 55")
+def validate_trial_count(n_trials: int, passage_count: int = 55) -> None:
+    """Require a nonempty prefix within an explicitly known passage table."""
+    if passage_count < 1:
+        raise ValueError("passage_count must be positive")
+    if not 1 <= n_trials <= passage_count:
+        raise ValueError(
+            f"--n-trials must be between 1 and {passage_count}"
+        )
+
+
+def default_processed_dir(corpus: str) -> Path:
+    """Return the checked corpus-specific canonical-table directory."""
+    if corpus == "provo":
+        return DEFAULT_PROCESSED_DIR
+    if corpus == "onestop":
+        return DEFAULT_ONESTOP_PROCESSED_DIR
+    raise ValueError(f"Unsupported corpus: {corpus}")
+
+
+def default_runtime_dir(corpus: str) -> Path:
+    """Return the isolated corpus-specific OB1 runtime directory."""
+    if corpus == "provo":
+        return DEFAULT_RUNTIME_DIR
+    if corpus == "onestop":
+        return DEFAULT_ONESTOP_RUNTIME_DIR
+    raise ValueError(f"Unsupported corpus: {corpus}")
+
+
+def default_output_dir(corpus: str) -> Path:
+    """Return the corpus-specific full-run output directory."""
+    if corpus == "provo":
+        return DEFAULT_OUTPUT_DIR
+    if corpus == "onestop":
+        return DEFAULT_ONESTOP_OUTPUT_DIR
+    raise ValueError(f"Unsupported corpus: {corpus}")
+
+
+def resolved_path(value: Path | None, fallback: Path) -> Path:
+    """Use a user override or one deterministic corpus-specific default."""
+    return Path(value) if value is not None else fallback
 
 
 def json_safe(value):
@@ -100,17 +160,108 @@ def json_safe(value):
     return value
 
 
-def ensure_prepared(processed_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Load canonical Provo tables, creating them if absent."""
-    passages_path = processed_dir / "provo_passages.csv"
-    words_path = processed_dir / "provo_words.csv"
-    if not passages_path.is_file() or not words_path.is_file():
+def write_json_atomic(path: Path, payload: dict) -> None:
+    """Write JSON through a same-directory temporary file and atomic replace."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_suffix(f"{path.suffix}.tmp")
+    with temporary_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    temporary_path.replace(path)
+
+
+def prepare_corpus(
+    corpus: str,
+    processed_dir: Path,
+    onestop_chunksize: int = ONESTOP_DEFAULT_CHUNK_SIZE,
+) -> dict:
+    """Build and write one corpus's canonical Human-TRT tables."""
+    if corpus == "provo":
         artifacts = build_canonical_tables(
-            RAW_DIR / EYE_FILENAME,
-            RAW_DIR / PREDICTABILITY_FILENAME,
+            PROVO_RAW_DIR / EYE_FILENAME,
+            PROVO_RAW_DIR / PREDICTABILITY_FILENAME,
         )
         write_canonical_tables(processed_dir, *artifacts)
-    return pd.read_csv(passages_path), pd.read_csv(words_path)
+        return artifacts[-1]
+    if corpus == "onestop":
+        artifacts = build_onestop_tables(
+            ONESTOP_RAW_DIR / ONESTOP_ZIP_FILENAME,
+            chunksize=onestop_chunksize,
+            strict=True,
+        )
+        write_onestop_tables(processed_dir, *artifacts)
+        return artifacts[-1]
+    raise ValueError(f"Unsupported corpus: {corpus}")
+
+
+def ensure_prepared(
+    processed_dir: Path,
+    corpus: str = "provo",
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Load canonical corpus tables, building checked tables when absent."""
+    if corpus not in CORPUS_FILENAMES:
+        raise ValueError(f"Unsupported corpus: {corpus}")
+    passage_filename, word_filename = CORPUS_FILENAMES[corpus]
+    passages_path = processed_dir / passage_filename
+    words_path = processed_dir / word_filename
+    required_paths = [passages_path, words_path]
+    if corpus == "provo":
+        required_paths.extend(
+            [
+                processed_dir / "provo_excluded_positions.csv",
+                processed_dir / "provo_prepare_audit.json",
+            ]
+        )
+    else:
+        required_paths.append(
+            processed_dir / "onestop_prepare_audit.json"
+        )
+    if not all(path.is_file() for path in required_paths):
+        prepare_corpus(corpus, processed_dir)
+    passages = pd.read_csv(passages_path, keep_default_na=False)
+    words = pd.read_csv(
+        words_path,
+        keep_default_na=False,
+        na_values={"human_trt_conditional": [""]},
+    )
+    if passages.empty or words.empty:
+        raise ValueError(f"Prepared {corpus} tables must not be empty")
+    if corpus == "provo":
+        excluded = pd.read_csv(
+            processed_dir / "provo_excluded_positions.csv",
+            keep_default_na=False,
+        )
+        with (
+            processed_dir / "provo_prepare_audit.json"
+        ).open(encoding="utf-8") as handle:
+            audit = json.load(handle)
+        validate_canonical_tables(
+            passages,
+            words,
+            excluded,
+            audit,
+        )
+    else:
+        with (
+            processed_dir / "onestop_prepare_audit.json"
+        ).open(encoding="utf-8") as handle:
+            audit = json.load(handle)
+        validate_loaded_onestop_model_tables(
+            passages,
+            words,
+            audit,
+            strict=True,
+        )
+    return passages, words
+
+
+def download_comparison_assets(corpus: str) -> None:
+    """Download and verify the minimal assets for one full comparison."""
+    if corpus not in CORPORA:
+        raise ValueError(f"Unsupported corpus: {corpus}")
+    for selected in (corpus, "ob1", "subtlex"):
+        download_assets(selected)
+        verify_assets(selected)
 
 
 def checkpoint_ids(
@@ -254,9 +405,11 @@ def run_predict_et1(
     sigma_records: list[dict],
     et1_checkpoint: Path | None,
     et1_tokenizer: Path | None,
+    corpus: str = "provo",
+    include_special_tokens_in_redistribution: bool = True,
 ) -> dict:
     """Run one frozen ET1 pass and all fixed redistribution checkpoints."""
-    passages, words = ensure_prepared(processed_dir)
+    passages, words = ensure_prepared(processed_dir, corpus)
     predictor = ET1NativePredictor(
         checkpoint_path=et1_checkpoint,
         tokenizer_path=et1_tokenizer,
@@ -266,9 +419,14 @@ def run_predict_et1(
         words,
         sigma_records,
         predictor,
+        include_special_tokens_in_redistribution=(
+            include_special_tokens_in_redistribution
+        ),
     )
-    write_et1_outputs(output_dir, *artifacts)
-    return artifacts[-1]
+    audit = dict(artifacts[-1])
+    audit["corpus"] = corpus
+    write_et1_outputs(output_dir, *artifacts[:-1], audit)
+    return audit
 
 
 def run_simulate_ob1(
@@ -276,19 +434,62 @@ def run_simulate_ob1(
     runtime_dir: Path,
     output_dir: Path,
     seeds: list[int],
-    n_trials: int,
+    n_trials: int | None,
     python_hash_seed: int,
     workers: int,
+    corpus: str = "provo",
 ) -> dict:
     """Prepare runtime, execute OB1, and aggregate word-level TVT."""
-    validate_trial_count(n_trials)
-    passages, words = ensure_prepared(processed_dir)
+    passages, words = ensure_prepared(processed_dir, corpus)
+    resolved_n_trials = len(passages) if n_trials is None else n_trials
+    validate_trial_count(resolved_n_trials, len(passages))
+    stimulus_name = CORPUS_STIMULUS_NAMES[corpus]
     preparation = prepare_ob1_runtime(
         passages,
         runtime_dir,
         python_hash_seed=python_hash_seed,
+        stimulus_name=stimulus_name,
     )
     output_dir.mkdir(parents=True, exist_ok=True)
+    transformations = pd.read_csv(
+        preparation["token_transformations_path"]
+    )
+    if len(transformations) != int(preparation["token_transformations"]):
+        raise ValueError("OB1 token-transformation audit count changed")
+    if "ob1_evaluable" in words:
+        eligibility = words["ob1_evaluable"]
+        if eligibility.dtype != bool:
+            normalized = eligibility.astype(str).str.lower()
+            if not normalized.isin({"true", "false"}).all():
+                raise ValueError("Invalid canonical ob1_evaluable values")
+            eligibility = normalized.eq("true")
+        coordinate_columns = [
+            "passage_id_zero_based",
+            "word_id_zero_based",
+        ]
+        expected_coordinates = {
+            tuple(map(int, row))
+            for row in words.loc[
+                ~eligibility,
+                coordinate_columns,
+            ].itertuples(index=False, name=None)
+        }
+        transformed_coordinates = {
+            tuple(map(int, row))
+            for row in transformations[
+                coordinate_columns
+            ].itertuples(index=False, name=None)
+        }
+        if transformed_coordinates != expected_coordinates:
+            raise ValueError(
+                "OB1 runtime transformations do not match canonical "
+                "ob1_evaluable exclusions"
+            )
+    output_transformations = output_dir / "ob1_token_transformations.csv"
+    transformations.to_csv(output_transformations, index=False)
+    preparation["output_token_transformations_path"] = str(
+        output_transformations.resolve()
+    )
     with (output_dir / "ob1_runtime_preparation.json").open(
         "w",
         encoding="utf-8",
@@ -299,55 +500,82 @@ def run_simulate_ob1(
         runtime_dir,
         output_dir,
         seeds=seeds,
-        n_trials=n_trials,
+        n_trials=resolved_n_trials,
         python_hash_seed=python_hash_seed,
         workers=workers,
+        stimulus_name=stimulus_name,
     )
     fixations = pd.read_csv(output_dir / "ob1_fixations.csv")
-    eligible_words = words[words["passage_id_zero_based"] < n_trials].copy()
-    artifacts = aggregate_ob1_tvt(fixations, eligible_words)
-    write_ob1_aggregation(output_dir, *artifacts)
-    return artifacts[-1]
+    eligible_words = words[
+        words["passage_id_zero_based"] < resolved_n_trials
+    ].copy()
+    simulated_passages = passages[
+        passages["passage_id_zero_based"] < resolved_n_trials
+    ].copy()
+    artifacts = aggregate_ob1_tvt(
+        fixations,
+        eligible_words,
+        valid_fixation_coordinates=stimulus_word_coordinates(
+            simulated_passages
+        ),
+        expected_seeds=seeds,
+    )
+    audit = dict(artifacts[-1])
+    audit.update(
+        {
+            "corpus": corpus,
+            "stimulus_name": stimulus_name,
+            "n_trials": int(resolved_n_trials),
+        }
+    )
+    write_ob1_aggregation(output_dir, *artifacts[:-1], audit)
+    return audit
 
 
-def run_evaluate(
-    processed_dir: Path,
-    et1_dir: Path,
-    ob1_dir: Path,
-    output_dir: Path,
-    human_target: str,
-    bootstrap_samples: int,
-    seed: int,
+def evaluation_volume_audit(
+    word_values: pd.DataFrame,
+    passage_metrics: pd.DataFrame,
 ) -> dict:
-    """Join saved model values and produce all statistical outputs."""
-    _, canonical_words = ensure_prepared(processed_dir)
-    et1_words = pd.read_csv(et1_dir / "et1_word_values.csv")
-    ob1_words = pd.read_csv(ob1_dir / "ob1_word_values.csv")
-    word_values = merge_word_values(canonical_words, et1_words, ob1_words)
-    passage_metrics = evaluate_passages(word_values, human_target)
-    method_summary = summarize_methods(
-        passage_metrics,
-        bootstrap_samples,
-        seed,
+    """Summarize the exact passages and words entering one evaluation."""
+    audit_columns = [
+        "passage_id_zero_based",
+        "original_word_count",
+        "ob1_compatible_word_count",
+        "ob1_incompatible_words_excluded",
+        "word_count",
+        "human_missing_words_excluded",
+    ]
+    passage_word_audit = (
+        passage_metrics[audit_columns]
+        .drop_duplicates()
+        .sort_values("passage_id_zero_based")
     )
-    checkpoint_summary = summarize_methods_by_checkpoint(
-        passage_metrics,
-        bootstrap_samples,
-        seed,
-    )
-    contrasts = paired_contrasts(
-        passage_metrics,
-        bootstrap_samples,
-        seed,
-    )
-    audit = {
-        "human_target": human_target,
-        "bootstrap_samples": bootstrap_samples,
-        "bootstrap_seed": seed,
+    if passage_word_audit["passage_id_zero_based"].duplicated().any():
+        raise ValueError("Evaluation word filtering differs across methods")
+    return {
         "checkpoints": int(word_values["checkpoint_id"].nunique()),
-        "passages": int(word_values["passage_id_zero_based"].nunique()),
-        "word_rows": len(word_values),
-        "passage_metric_rows": len(passage_metrics),
+        "passages": int(
+            passage_word_audit["passage_id_zero_based"].nunique()
+        ),
+        "word_rows": int(len(word_values)),
+        "passage_metric_rows": int(len(passage_metrics)),
+        "original_evaluation_words": int(
+            passage_word_audit["original_word_count"].sum()
+        ),
+        "ob1_compatible_words": int(
+            passage_word_audit["ob1_compatible_word_count"].sum()
+        ),
+        "ob1_incompatible_words_excluded": int(
+            passage_word_audit[
+                "ob1_incompatible_words_excluded"
+            ].sum()
+        ),
+        "evaluated_words": int(
+            passage_word_audit["word_count"].sum()
+        ),
+        "human_missing_words_excluded": int(
+            passage_word_audit["human_missing_words_excluded"].sum()
+        ),
         "negative_value_counts": {
             column: int((word_values[column] < 0).sum())
             for column in (
@@ -358,6 +586,89 @@ def run_evaluate(
             )
         },
     }
+
+
+def run_evaluate(
+    processed_dir: Path,
+    et1_dir: Path,
+    ob1_dir: Path,
+    output_dir: Path,
+    human_target: str,
+    bootstrap_samples: int,
+    seed: int,
+    corpus: str = "provo",
+    cluster_column: str | None = None,
+    with_ob1_clean_passage_sensitivity: bool = False,
+) -> dict:
+    """Join saved model values and produce all statistical outputs."""
+    _, canonical_words = ensure_prepared(processed_dir, corpus)
+    if cluster_column is None and corpus == "onestop":
+        cluster_column = "cluster_id"
+    et1_words = pd.read_csv(et1_dir / "et1_word_values.csv")
+    ob1_words = pd.read_csv(ob1_dir / "ob1_word_values.csv")
+    et1_audit_path = et1_dir / "et1_inference_audit.json"
+    ob1_audit_path = ob1_dir / "ob1_aggregation_audit.json"
+    with et1_audit_path.open(encoding="utf-8") as handle:
+        et1_audit = json.load(handle)
+    with ob1_audit_path.open(encoding="utf-8") as handle:
+        ob1_audit = json.load(handle)
+    for source_name, source_audit in (
+        ("ET1", et1_audit),
+        ("OB1", ob1_audit),
+    ):
+        source_corpus = source_audit.get("corpus")
+        if source_corpus is not None and source_corpus != corpus:
+            raise ValueError(
+                f"{source_name} source corpus {source_corpus!r} "
+                f"does not match requested corpus {corpus!r}"
+            )
+    word_values = merge_word_values(canonical_words, et1_words, ob1_words)
+    passage_metrics = evaluate_passages(word_values, human_target)
+    method_summary = summarize_methods(
+        passage_metrics,
+        bootstrap_samples,
+        seed,
+        cluster_column=cluster_column,
+    )
+    checkpoint_summary = summarize_methods_by_checkpoint(
+        passage_metrics,
+        bootstrap_samples,
+        seed,
+        cluster_column=cluster_column,
+    )
+    contrasts = paired_contrasts(
+        passage_metrics,
+        bootstrap_samples,
+        seed,
+        cluster_column=cluster_column,
+    )
+    audit = {
+        "corpus": corpus,
+        "et1_source_dir": str(et1_dir.resolve()),
+        "et1_redistribution_special_token_policy": et1_audit.get(
+            "redistribution_special_token_policy"
+        ),
+        "et1_special_tokens_included_in_redistribution": et1_audit.get(
+            "special_tokens_included_in_redistribution"
+        ),
+        "et1_predictor_cache_signature": et1_audit.get(
+            "predictor_cache_signature"
+        ),
+        "ob1_source_dir": str(ob1_dir.resolve()),
+        "ob1_virtual_readers": ob1_audit.get("virtual_readers"),
+        "ob1_seeds": ob1_audit.get("seeds"),
+        "ob1_stimulus_name": ob1_audit.get("stimulus_name"),
+        "human_target": human_target,
+        "bootstrap_samples": bootstrap_samples,
+        "bootstrap_seed": seed,
+        "resampling_cluster_column": cluster_column,
+        "resampling_clusters": (
+            int(passage_metrics[cluster_column].nunique())
+            if cluster_column is not None
+            else None
+        ),
+        **evaluation_volume_audit(word_values, passage_metrics),
+    }
     write_evaluation_outputs(
         output_dir,
         word_values,
@@ -367,6 +678,63 @@ def run_evaluate(
         contrasts,
         audit,
     )
+    if with_ob1_clean_passage_sensitivity:
+        clean_metrics, selection_audit = select_ob1_clean_passages(
+            passage_metrics
+        )
+        clean_passage_ids = set(
+            clean_metrics["passage_id_zero_based"].unique().tolist()
+        )
+        clean_word_values = word_values.loc[
+            word_values["passage_id_zero_based"].isin(clean_passage_ids)
+        ].copy()
+        clean_method_summary = summarize_methods(
+            clean_metrics,
+            bootstrap_samples,
+            seed,
+            cluster_column=cluster_column,
+        )
+        clean_checkpoint_summary = summarize_methods_by_checkpoint(
+            clean_metrics,
+            bootstrap_samples,
+            seed,
+            cluster_column=cluster_column,
+        )
+        clean_contrasts = paired_contrasts(
+            clean_metrics,
+            bootstrap_samples,
+            seed,
+            cluster_column=cluster_column,
+        )
+        clean_output_dir = (
+            output_dir / OB1_CLEAN_SENSITIVITY_DIRECTORY
+        )
+        clean_audit = {
+            **audit,
+            **evaluation_volume_audit(
+                clean_word_values,
+                clean_metrics,
+            ),
+            **selection_audit,
+            "analysis_role": "sensitivity_only",
+            "primary_results_unchanged": True,
+            "primary_evaluation_dir": str(output_dir.resolve()),
+            "sensitivity_output_dir": str(clean_output_dir.resolve()),
+            "resampling_clusters": (
+                int(clean_metrics[cluster_column].nunique())
+                if cluster_column is not None
+                else None
+            ),
+        }
+        write_evaluation_outputs(
+            clean_output_dir,
+            clean_word_values,
+            clean_metrics,
+            clean_method_summary,
+            clean_checkpoint_summary,
+            clean_contrasts,
+            clean_audit,
+        )
     return audit
 
 
@@ -424,14 +792,20 @@ def runtime_manifest(args: argparse.Namespace, output_dir: Path) -> dict:
 
 
 def command_setup(args: argparse.Namespace) -> None:
-    """Download and validate all comparison assets and optional ET1 assets."""
-    download_assets("all")
-    verify_assets("all")
-    artifacts = build_canonical_tables(
-        RAW_DIR / EYE_FILENAME,
-        RAW_DIR / PREDICTABILITY_FILENAME,
+    """Download and validate one corpus comparison and optional ET1 assets."""
+    processed_dir = resolved_path(
+        args.processed_dir,
+        default_processed_dir(args.corpus),
     )
-    write_canonical_tables(args.processed_dir, *artifacts)
+    download_comparison_assets(args.corpus)
+    if args.corpus == "provo":
+        download_assets("et2-reference")
+        verify_assets("et2-reference")
+    prepare_corpus(
+        args.corpus,
+        processed_dir,
+        onestop_chunksize=args.onestop_chunksize,
+    )
     if not args.skip_et1:
         from models.et_checkpoint import ensure_et1_checkpoint
         from models.et1_tokenizer import load_et1_tokenizer
@@ -441,25 +815,48 @@ def command_setup(args: argparse.Namespace) -> None:
 
 
 def command_audit(args: argparse.Namespace) -> None:
-    """Print combined official Provo and ET2 provenance audits."""
-    verify_assets("all")
-    report = {
-        "provo": audit_dataset(RAW_DIR),
-        "et2_provo": compare_et2_provo(
-            RAW_DIR / EYE_FILENAME,
-            ROOT / "third_party/et2_torontocl_cmcl_2021/data/provo.csv",
-        ),
-    }
+    """Print checked raw-data provenance for the selected corpus."""
+    if args.corpus == "provo":
+        verify_assets("provo")
+        verify_assets("et2-reference")
+        report = {
+            "provo": audit_dataset(PROVO_RAW_DIR),
+            "et2_provo": compare_et2_provo(
+                PROVO_RAW_DIR / EYE_FILENAME,
+                ROOT / "third_party/et2_torontocl_cmcl_2021/data/provo.csv",
+            ),
+        }
+    else:
+        verify_assets("onestop")
+        processed_dir = resolved_path(
+            args.processed_dir,
+            default_processed_dir("onestop"),
+        )
+        ensure_prepared(processed_dir, "onestop")
+        audit_path = processed_dir / "onestop_prepare_audit.json"
+        with audit_path.open(encoding="utf-8") as handle:
+            report = {"onestop": json.load(handle)}
     print(json.dumps(report, indent=2, sort_keys=True))
 
 
 def command_prepare(args: argparse.Namespace) -> None:
     """Build and print the canonical Human Provo grid."""
     artifacts = build_canonical_tables(
-        RAW_DIR / EYE_FILENAME,
-        RAW_DIR / PREDICTABILITY_FILENAME,
+        PROVO_RAW_DIR / EYE_FILENAME,
+        PROVO_RAW_DIR / PREDICTABILITY_FILENAME,
     )
     write_canonical_tables(args.output_dir, *artifacts)
+    print(json.dumps(artifacts[-1], indent=2, sort_keys=True))
+
+
+def command_prepare_onestop(args: argparse.Namespace) -> None:
+    """Build and print the canonical Human OneStop Advanced grid."""
+    artifacts = build_onestop_tables(
+        args.input_zip,
+        chunksize=args.chunksize,
+        strict=args.strict,
+    )
+    write_onestop_tables(args.output_dir, *artifacts)
     print(json.dumps(artifacts[-1], indent=2, sort_keys=True))
 
 
@@ -494,40 +891,65 @@ def command_predict_et1(args: argparse.Namespace) -> None:
     )
     if records:
         write_sigma_records(args.output_dir, records)
-    audit = run_predict_et1(
+    processed_dir = resolved_path(
         args.processed_dir,
+        default_processed_dir(args.corpus),
+    )
+    audit = run_predict_et1(
+        processed_dir,
         args.output_dir,
         records,
         args.et1_checkpoint,
         args.et1_tokenizer,
+        corpus=args.corpus,
+        include_special_tokens_in_redistribution=(
+            not args.exclude_special_tokens_from_redistribution
+        ),
     )
     print(json.dumps(audit, indent=2, sort_keys=True))
 
 
 def command_simulate_ob1(args: argparse.Namespace) -> None:
     """Run the exact baseline OB1 virtual readers and aggregate TVT."""
-    audit = run_simulate_ob1(
+    processed_dir = resolved_path(
         args.processed_dir,
+        default_processed_dir(args.corpus),
+    )
+    runtime_dir = resolved_path(
         args.runtime_dir,
+        default_runtime_dir(args.corpus),
+    )
+    audit = run_simulate_ob1(
+        processed_dir,
+        runtime_dir,
         args.output_dir,
         parse_seed_specification(args.seeds),
         args.n_trials,
         args.python_hash_seed,
         args.workers,
+        corpus=args.corpus,
     )
     print(json.dumps(audit, indent=2, sort_keys=True))
 
 
 def command_evaluate(args: argparse.Namespace) -> None:
     """Evaluate saved ET1 and OB1 word allocations."""
-    audit = run_evaluate(
+    processed_dir = resolved_path(
         args.processed_dir,
+        default_processed_dir(args.corpus),
+    )
+    audit = run_evaluate(
+        processed_dir,
         args.et1_dir,
         args.ob1_dir,
         args.output_dir,
         args.human_target,
         args.bootstrap_samples,
         args.seed,
+        corpus=args.corpus,
+        with_ob1_clean_passage_sensitivity=(
+            args.with_ob1_clean_passage_sensitivity
+        ),
     )
     print(json.dumps(audit, indent=2, sort_keys=True))
 
@@ -537,28 +959,38 @@ def command_run(args: argparse.Namespace) -> None:
     validate_predict_sigma_arguments(args)
     if not args.checkpoint and not args.sigma_left:
         raise ValueError(
-            "run requires --checkpoint or direct --sigma-left/--sigma-right values"
+            "run requires --checkpoint or direct "
+            "--sigma-left/--sigma-right values"
         )
-    output_dir = args.output_dir.resolve()
+    processed_dir = resolved_path(
+        args.processed_dir,
+        default_processed_dir(args.corpus),
+    ).resolve()
+    runtime_dir = resolved_path(
+        args.runtime_dir,
+        default_runtime_dir(args.corpus),
+    ).resolve()
+    output_dir = resolved_path(
+        args.output_dir,
+        default_output_dir(args.corpus),
+    ).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    with (output_dir / "run_manifest.json").open(
-        "w",
-        encoding="utf-8",
-    ) as handle:
-        json.dump(
-            runtime_manifest(args, output_dir),
-            handle,
-            indent=2,
-            sort_keys=True,
-        )
-        handle.write("\n")
+    manifest = runtime_manifest(args, output_dir)
+    manifest["resolved_paths"] = {
+        "processed_dir": str(processed_dir),
+        "runtime_dir": str(runtime_dir),
+        "output_dir": str(output_dir),
+    }
+    manifest["status"] = "running"
+    manifest_path = output_dir / "run_manifest.json"
+    write_json_atomic(manifest_path, manifest)
 
-    download_assets("all")
-    artifacts = build_canonical_tables(
-        RAW_DIR / EYE_FILENAME,
-        RAW_DIR / PREDICTABILITY_FILENAME,
+    download_comparison_assets(args.corpus)
+    prepare_corpus(args.corpus, processed_dir)
+    passages, _ = ensure_prepared(
+        processed_dir,
+        args.corpus,
     )
-    write_canonical_tables(args.processed_dir, *artifacts)
     records = (
         extract_sigma_records(
             args.checkpoint,
@@ -571,40 +1003,91 @@ def command_run(args: argparse.Namespace) -> None:
     )
     write_sigma_records(output_dir, records)
     run_predict_et1(
-        args.processed_dir,
+        processed_dir,
         output_dir / "et1",
         records,
         args.et1_checkpoint,
         args.et1_tokenizer,
+        corpus=args.corpus,
+        include_special_tokens_in_redistribution=True,
     )
     seeds = parse_seed_specification(args.seeds)
     run_simulate_ob1(
-        args.processed_dir,
-        args.runtime_dir,
+        processed_dir,
+        runtime_dir,
         output_dir / "ob1",
         seeds,
-        55,
+        len(passages),
         args.python_hash_seed,
         args.workers,
+        corpus=args.corpus,
     )
     run_evaluate(
-        args.processed_dir,
+        processed_dir,
         output_dir / "et1",
         output_dir / "ob1",
         output_dir / "evaluation_unconditional",
         "human_trt_unconditional",
         args.bootstrap_samples,
         args.seed,
+        corpus=args.corpus,
+        with_ob1_clean_passage_sensitivity=(
+            args.with_ob1_clean_passage_sensitivity
+        ),
     )
     run_evaluate(
-        args.processed_dir,
+        processed_dir,
         output_dir / "et1",
         output_dir / "ob1",
         output_dir / "evaluation_conditional",
         "human_trt_conditional",
         args.bootstrap_samples,
         args.seed,
+        corpus=args.corpus,
+        with_ob1_clean_passage_sensitivity=(
+            args.with_ob1_clean_passage_sensitivity
+        ),
     )
+    if args.with_special_token_sensitivity:
+        sensitivity_et1_dir = output_dir / "et1_special_excluded"
+        run_predict_et1(
+            processed_dir,
+            sensitivity_et1_dir,
+            records,
+            args.et1_checkpoint,
+            args.et1_tokenizer,
+            corpus=args.corpus,
+            include_special_tokens_in_redistribution=False,
+        )
+        run_evaluate(
+            processed_dir,
+            sensitivity_et1_dir,
+            output_dir / "ob1",
+            output_dir / "evaluation_unconditional_special_excluded",
+            "human_trt_unconditional",
+            args.bootstrap_samples,
+            args.seed,
+            corpus=args.corpus,
+            with_ob1_clean_passage_sensitivity=(
+                args.with_ob1_clean_passage_sensitivity
+            ),
+        )
+        run_evaluate(
+            processed_dir,
+            sensitivity_et1_dir,
+            output_dir / "ob1",
+            output_dir / "evaluation_conditional_special_excluded",
+            "human_trt_conditional",
+            args.bootstrap_samples,
+            args.seed,
+            corpus=args.corpus,
+            with_ob1_clean_passage_sensitivity=(
+                args.with_ob1_clean_passage_sensitivity
+            ),
+        )
+    manifest["status"] = "complete"
+    manifest["completed_at_utc"] = datetime.now(timezone.utc).isoformat()
+    write_json_atomic(manifest_path, manifest)
 
 
 def add_common_processed_argument(parser: argparse.ArgumentParser) -> None:
@@ -612,7 +1095,16 @@ def add_common_processed_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--processed-dir",
         type=Path,
-        default=DEFAULT_PROCESSED_DIR,
+        default=None,
+    )
+
+
+def add_corpus_argument(parser: argparse.ArgumentParser) -> None:
+    """Add a backward-compatible corpus selector."""
+    parser.add_argument(
+        "--corpus",
+        choices=CORPORA,
+        default="provo",
     )
 
 
@@ -657,12 +1149,20 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     setup = subparsers.add_parser("setup")
+    add_corpus_argument(setup)
     add_common_processed_argument(setup)
     add_et1_arguments(setup)
+    setup.add_argument(
+        "--onestop-chunksize",
+        type=int,
+        default=ONESTOP_DEFAULT_CHUNK_SIZE,
+    )
     setup.add_argument("--skip-et1", action="store_true")
     setup.set_defaults(handler=command_setup)
 
     audit = subparsers.add_parser("audit")
+    add_corpus_argument(audit)
+    add_common_processed_argument(audit)
     audit.set_defaults(handler=command_audit)
 
     prepare = subparsers.add_parser("prepare-provo")
@@ -673,31 +1173,61 @@ def build_parser() -> argparse.ArgumentParser:
     )
     prepare.set_defaults(handler=command_prepare)
 
+    prepare_onestop = subparsers.add_parser("prepare-onestop")
+    prepare_onestop.add_argument(
+        "--input-zip",
+        type=Path,
+        default=ONESTOP_RAW_DIR / ONESTOP_ZIP_FILENAME,
+    )
+    prepare_onestop.add_argument(
+        "--output-dir",
+        type=Path,
+        default=DEFAULT_ONESTOP_PROCESSED_DIR,
+    )
+    prepare_onestop.add_argument(
+        "--chunksize",
+        type=int,
+        default=ONESTOP_DEFAULT_CHUNK_SIZE,
+    )
+    prepare_onestop.add_argument(
+        "--strict",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    prepare_onestop.set_defaults(handler=command_prepare_onestop)
+
     sigmas = subparsers.add_parser("extract-sigmas")
     add_sigma_arguments(sigmas, required=True)
     sigmas.add_argument("--output-dir", type=Path, required=True)
     sigmas.set_defaults(handler=command_extract_sigmas)
 
     et1 = subparsers.add_parser("predict-et1")
+    add_corpus_argument(et1)
     add_common_processed_argument(et1)
     add_sigma_arguments(et1, required=False)
     add_direct_sigma_arguments(et1)
     add_et1_arguments(et1)
     et1.add_argument("--sigma-json", type=Path)
     et1.add_argument("--output-dir", type=Path, required=True)
+    et1.add_argument(
+        "--exclude-special-tokens-from-redistribution",
+        action="store_true",
+    )
     et1.set_defaults(handler=command_predict_et1)
 
     ob1 = subparsers.add_parser("simulate-ob1")
+    add_corpus_argument(ob1)
     add_common_processed_argument(ob1)
-    ob1.add_argument("--runtime-dir", type=Path, default=DEFAULT_RUNTIME_DIR)
+    ob1.add_argument("--runtime-dir", type=Path)
     ob1.add_argument("--output-dir", type=Path, required=True)
     ob1.add_argument("--seeds", default="0:100")
-    ob1.add_argument("--n-trials", type=int, default=55)
+    ob1.add_argument("--n-trials", type=int)
     ob1.add_argument("--python-hash-seed", type=int, default=20260725)
     ob1.add_argument("--workers", type=int, default=1)
     ob1.set_defaults(handler=command_simulate_ob1)
 
     evaluate = subparsers.add_parser("evaluate")
+    add_corpus_argument(evaluate)
     add_common_processed_argument(evaluate)
     evaluate.add_argument("--et1-dir", type=Path, required=True)
     evaluate.add_argument("--ob1-dir", type=Path, required=True)
@@ -709,20 +1239,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evaluate.add_argument("--bootstrap-samples", type=int, default=10000)
     evaluate.add_argument("--seed", type=int, default=20260725)
+    evaluate.add_argument(
+        "--with-ob1-clean-passage-sensitivity",
+        action="store_true",
+    )
     evaluate.set_defaults(handler=command_evaluate)
 
     run = subparsers.add_parser("run")
+    add_corpus_argument(run)
     add_common_processed_argument(run)
     add_sigma_arguments(run, required=False)
     add_direct_sigma_arguments(run)
     add_et1_arguments(run)
-    run.add_argument("--runtime-dir", type=Path, default=DEFAULT_RUNTIME_DIR)
-    run.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    run.add_argument("--runtime-dir", type=Path)
+    run.add_argument("--output-dir", type=Path)
     run.add_argument("--seeds", default="0:100")
     run.add_argument("--python-hash-seed", type=int, default=20260725)
     run.add_argument("--workers", type=int, default=1)
     run.add_argument("--bootstrap-samples", type=int, default=10000)
     run.add_argument("--seed", type=int, default=20260725)
+    run.add_argument(
+        "--with-special-token-sensitivity",
+        action="store_true",
+    )
+    run.add_argument(
+        "--with-ob1-clean-passage-sensitivity",
+        action="store_true",
+    )
     run.set_defaults(handler=command_run)
     return parser
 

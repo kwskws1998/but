@@ -92,6 +92,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--seeds", required=True)
     parser.add_argument("--n-trials", type=int, default=55)
+    parser.add_argument(
+        "--stimuli-filename",
+        default="Provo_Corpus.csv",
+    )
     return parser.parse_args()
 
 
@@ -106,6 +110,12 @@ def main() -> None:
         raise ValueError("No OB1 seeds were provided")
     if os.environ.get("PYTHONHASHSEED") is None:
         raise RuntimeError("PYTHONHASHSEED must be fixed by the parent process")
+    stimuli_filename = Path(args.stimuli_filename)
+    if (
+        stimuli_filename.name != args.stimuli_filename
+        or stimuli_filename.suffix != ".csv"
+    ):
+        raise ValueError("--stimuli-filename must be one CSV basename")
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
 
@@ -115,7 +125,9 @@ def main() -> None:
     import simulate_experiment as upstream_simulation
 
     upstream_simulation.sleep = lambda _: None
-    stimuli_path = runtime_dir / "data/processed/Provo_Corpus.csv"
+    stimuli_path = runtime_dir / "data/processed" / stimuli_filename
+    if not stimuli_path.is_file():
+        raise FileNotFoundError(stimuli_path)
     global_parameters = {
         "task_to_run": "continuous_reading",
         "stimuli_filepath": str(stimuli_path),
@@ -178,6 +190,7 @@ def main() -> None:
                 "python_hash_seed": os.environ["PYTHONHASHSEED"],
                 "seeds": seeds,
                 "n_trials": args.n_trials,
+                "stimuli_filename": args.stimuli_filename,
                 "parameters": parameter_record,
                 "runtimes": runtimes,
                 "fixation_rows": len(all_records),

@@ -1,228 +1,277 @@
 # Cognitive model comparison
 
-This directory is the isolated, Python-only implementation of the
-reviewer-requested Human Provo–ET1–redistribution–OB1 comparison. It does not
-train or alter the OASST1 reward model.
+This directory contains the isolated, Python-only Human gaze–ET1
+redistribution–OB1 comparison requested by the reviewer. It supports both the
+55-passage Provo corpus and the 162-paragraph OneStop Ordinary Reading
+extension. It does not train or load the Llama reward-model backbone.
 
 The directory name intentionally preserves the requested spelling:
 `cognitive_model_comparsion`.
 
-## What is implemented
+## Implemented experiment
 
-- checksum-verified download of the official Provo eye-tracking and
-  predictability files;
-- checksum-verified download of the official SUBTLEX-UK text table;
-- pinned downloads of the OB1–Provo and TorontoCL ET2 repositories;
-- exact reconstruction of TorontoCL's 2,659-row processed Provo table from the
-  official raw Provo release;
-- the 55-passage, 2,686-word canonical Human Provo evaluation grid;
-- unconditional TRT, in which skips remain zero, and conditional TRT over
-  fixated readers;
-- frozen ET1 inference with native pinned T5 offsets and exact word
-  aggregation;
-- reward-checkpoint sigma discovery, extraction, checksum recording, and
-  initial-value rejection;
-- direct effective/log-sigma input with source-accuracy provenance when the
-  original reward checkpoint is unavailable;
-- width-matched symmetric and learned asymmetric redistribution through the
-  repository's production `AsymGaussianRedistributor`;
-- an isolated deterministic wrapper around the pinned OB1 scientific source;
-- TVT aggregation over all fixations, including regressions, with skipped
-  words filled by zero;
-- passage-level Spearman, Jensen–Shannon divergence, and normalized-position
-  Wasserstein distance;
-- paired passage bootstrap, grand/seed-specific result CSVs, and a
-  passage-level boxplot;
-- one Python CLI for setup, component runs, and the full experiment.
+- checksum-verified official Provo eye-tracking and predictability data;
+- checksum-verified official OneStop Ordinary Paragraph Interest Area ZIP;
+- streaming OneStop preparation directly from the ZIP without extracting its
+  2.46 GB CSV;
+- pinned OB1–Provo source, TorontoCL ET2 reference source, and SUBTLEX-UK;
+- canonical Human grids:
+  - Provo: 55 passages and 2,686 corrected evaluable word positions;
+  - OneStop: 180 Ordinary/Gathering participants, 30 article clusters,
+    162 Advanced paragraphs, and 19,440 exact whitespace words;
+- Human unconditional TRT, retaining `IA_DWELL_TIME=0`, and conditional TRT,
+  excluding words with no positive-dwell reader;
+- frozen ET1 inference using the pinned native T5 tokenizer;
+- paper-faithful ET1 word mapping: sum all native T5-token TRT values assigned
+  by character offsets to each whitespace word;
+- width-matched symmetric and learned asymmetric redistribution using the
+  production `AsymGaussianRedistributor`;
+- the production-faithful primary mask, which includes the T5 EOS position
+  during redistribution, plus a requested special-token-excluded sensitivity;
+- per-passage mass audits before and after redistribution, including
+  word-assigned, unassigned-special, and final evaluable-grid mass;
+- deterministic, parallel OB1 stochastic simulations and TVT aggregation over
+  every fixation, including regressions;
+- passage-level Human Spearman, Jensen–Shannon divergence,
+  `word_order_wasserstein`, and OB1 Spearman;
+- percentile 95% confidence intervals from paired resampling and two-sided
+  paired sign-flip tests;
+- passage-level resampling for Provo and article-cluster resampling over the 30
+  OneStop articles;
+- optional OneStop clean-passage sensitivity restricted to 107 paragraphs
+  with no punctuation-only OB1 token transformation;
+- one Python CLI for setup, component runs, and complete experiments.
 
 No `.sh` file or `gdown` is used.
 
-## Environment and asset setup
+## Environment and setup
 
 From the repository root:
 
 ```bash
 python -m pip install -r cognitive_model_comparsion/requirements.txt
-python cognitive_model_comparsion/main.py setup
-python cognitive_model_comparsion/main.py audit
+
+python cognitive_model_comparsion/main.py setup --corpus provo
+python cognitive_model_comparsion/main.py audit --corpus provo
+
+python cognitive_model_comparsion/main.py setup --corpus onestop
+python cognitive_model_comparsion/main.py audit --corpus onestop
+
 python -m pytest -q cognitive_model_comparsion/tests
 ```
 
-The isolated requirements omit Llama-training-only packages such as
-`bitsandbytes`, `deepspeed`, `trl`, and `wandb`. The comparison does not load
-the Llama reward-model backbone.
+`setup --corpus onestop` downloads the official 169 MiB Ordinary Interest Area
+ZIP, verifies its byte count and SHA-256 digest, and reads only required
+columns in chunks. It does not extract the 2.46 GB CSV. Use
+`--onestop-chunksize` only when machine memory requires a different chunk
+size.
 
-`setup` downloads every re-downloadable data/source asset, validates its exact
-size and SHA-256 digest, builds the canonical Provo tables, downloads the
-pinned ET1 checkpoint if absent, and loads the pinned `t5-small` tokenizer.
-The downloaded files, third-party trees, runtime cache, and outputs are
-excluded by `.gitignore`.
+Use `--skip-et1` only when preparing an OB1-only CPU machine. The isolated
+requirements intentionally omit Llama-training packages such as
+`bitsandbytes`, `deepspeed`, `trl`, and `wandb`.
 
-Use `--skip-et1` only when preparing an OB1-only CPU machine:
-
-```bash
-python cognitive_model_comparsion/main.py setup --skip-et1
-```
-
-Offline integrity verification after setup:
+Offline asset verification:
 
 ```bash
 python cognitive_model_comparsion/download_assets.py --verify-only
 ```
 
-## Full experiment
+## Provo rebuttal run
 
-The learned sigma values must come from the actual reported OASST1 reward-model
-checkpoints. They are never fitted on Provo. For three seeds:
-
-```bash
-python cognitive_model_comparsion/main.py run \
-  --checkpoint /path/to/seed41/checkpoint \
-  --checkpoint-id seed41 \
-  --checkpoint /path/to/seed42/checkpoint \
-  --checkpoint-id seed42 \
-  --checkpoint /path/to/seed43/checkpoint \
-  --checkpoint-id seed43 \
-  --seeds 0:100 \
-  --bootstrap-samples 10000 \
-  --seed 20260725 \
-  --output-dir cognitive_model_comparsion/outputs/provo_ob1_full
-```
-
-If the exact effective sigma values were retained but the unrelated
-reward-model weights were not, run the same experiment directly:
+The supplied direct values are the effective sigmas learned by the
+ET1 + GazeConcat, TRT-only OASST1 reward-model condition. They remain fixed on
+Provo; neither sigma is fitted to Human Provo TRT.
 
 ```bash
-python cognitive_model_comparsion/main.py run \
+CUDA_VISIBLE_DEVICES=0 python cognitive_model_comparsion/main.py run \
+  --corpus provo \
   --sigma-left 0.41553 \
   --sigma-right 3.46115 \
   --sigma-value-type effective \
   --sigma-source-accuracy 0.76675 \
-  --checkpoint-id oasst1_et1_learned_sigma \
+  --checkpoint-id oasst1_et1_trt_only_sigma \
   --seeds 0:100 \
   --workers 32 \
   --bootstrap-samples 10000 \
   --seed 20260725 \
-  --output-dir cognitive_model_comparsion/outputs/provo_ob1_full
+  --with-special-token-sensitivity \
+  --output-dir cognitive_model_comparsion/outputs/provo_ob1_sigma076675
 ```
 
-Repeat `--sigma-left`, `--sigma-right`, `--sigma-source-accuracy`, and
-`--checkpoint-id` once per reported RM seed. Direct values must be the exact
-best-checkpoint values for the ET1 asymmetric condition; they are recorded in
-the run manifest and sigma tables but are never optimized on Provo.
+The primary `et1` directory reproduces the production redistribution mask,
+including T5 EOS. The additional `et1_special_excluded` directory masks
+special tokens before redistribution. Both paths still exclude special tokens
+when T5 values are summed into words.
 
-The checkpoint argument may point directly to a state file or to a directory
-containing one unambiguous `adapter_model.safetensors`,
-`adapter_model.bin`, `model.safetensors`, or `pytorch_model.bin`.
+The native T5 subtoken-to-word aggregation is unchanged in both paths:
 
-The command:
+\[
+E_i=\sum_{t\in word(i)}TRT_t^{ET1}.
+\]
 
-1. verifies/downloads the Provo, SUBTLEX-UK, OB1, and ET2-reference assets;
-2. rebuilds the canonical Human grid;
-3. extracts and freezes each checkpoint's learned left/right sigma;
-4. runs frozen ET1 once per passage and applies both redistribution controls;
-5. runs OB1 baseline readers for fixed seeds `0..99`;
-6. evaluates both unconditional and conditional Human TRT;
-7. writes the command, package versions, Git state, checkpoints, hashes,
-   sigmas, seeds, parameters, alignments, fixations, metrics, plots, and
-   audits.
+The sensitivity changes only which valid token positions participate in the
+Gaussian redistribution; it does not replace sum aggregation with averaging,
+first-subtoken assignment, or repeated word values.
 
-If a checkpoint contains multiple valid sigma copies, inspect the prefixes
-listed in the error and pass the intended one with `--sigma-prefix`. The
-extractor refuses an unchanged `1.0/1.0` pair by default; do not bypass this
-with `--allow-initial-sigmas` unless the checkpoint has been manually
-confirmed to be the intended trained model.
+## OneStop rebuttal run
+
+Prepare and inspect the official OneStop grid first:
+
+```bash
+python cognitive_model_comparsion/main.py setup --corpus onestop
+
+python cognitive_model_comparsion/main.py prepare-onestop \
+  --input-zip cognitive_model_comparsion/data/raw/onestop/ia_Paragraph_ordinary.csv.zip \
+  --output-dir cognitive_model_comparsion/data/processed/onestop \
+  --chunksize 50000 \
+  --strict
+
+python cognitive_model_comparsion/main.py audit --corpus onestop
+```
+
+Then run the same frozen ET1 sigmas and published OB1 baseline on the OneStop
+Advanced paragraphs:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python cognitive_model_comparsion/main.py run \
+  --corpus onestop \
+  --sigma-left 0.41553 \
+  --sigma-right 3.46115 \
+  --sigma-value-type effective \
+  --sigma-source-accuracy 0.76675 \
+  --checkpoint-id oasst1_et1_trt_only_sigma \
+  --seeds 0:100 \
+  --workers 32 \
+  --bootstrap-samples 10000 \
+  --seed 20260725 \
+  --with-special-token-sensitivity \
+  --with-ob1-clean-passage-sensitivity \
+  --output-dir cognitive_model_comparsion/outputs/onestop_ob1_sigma076675
+```
+
+This full OneStop 100-seed scientific run remains pending. The code and
+canonical data audit being complete must not be reported as a finished
+Human/OB1 alignment result.
+
+`0:100` means 100 stochastic OB1 replications with fixed random seeds. They are
+not 100 fitted reader models and are not the 180 OneStop participants. Human
+TRT is averaged from the actual participant rows; OB1 TVT is averaged from
+independent simulations of the same paragraph text.
+
+## OneStop preparation contract
+
+The OneStop primary condition keeps only:
+
+- official Ordinary Reading paragraph rows;
+- `difficulty_level=Adv`;
+- non-practice, non-repeated trials;
+- `question_preview=False`.
+
+The archive contains 11 base paragraphs with more than one exact on-screen
+text variant. For each base paragraph, the code selects the exact variant read
+by the largest number of participants, then applies deterministic lexical and
+SHA-256 tie-breaks. This retains 4,759 of 4,859 participant-paragraph trials
+and records all 100 excluded minority-variant trials in
+`onestop_variant_audit.csv`. No Human TRT value is used to select the text.
+
+The 19,440-word Human grid is never silently altered. Ninety-five
+punctuation-only whitespace tokens normalize to an empty OB1 token. They are
+marked `ob1_evaluable=False`, written to the OB1 transformation audit, and
+excluded from every Human/ET1/OB1 metric on the common evaluation grid.
+
+Because replacing an OB1-incompatible token inside a simulated paragraph can
+still affect neighboring OB1 fixations, the optional
+`--with-ob1-clean-passage-sensitivity` analysis removes all 55 affected
+paragraphs and reruns summaries on the 107 paragraphs with zero
+transformations. Those paragraphs span 28 article clusters, and the nested
+analysis resamples those 28 clusters rather than the 30 clusters in the
+primary analysis. Its tables are written below each evaluation directory as
+`ob1_clean_passages/`. This is a sensitivity analysis; it does not replace
+the 162-paragraph primary result.
+
+The primary Human target averages `IA_DWELL_TIME` across all retained readers,
+including zero-dwell words. The conditional sensitivity averages only positive
+dwell times; a word with no positive-dwell reader is `NaN` and is excluded
+from that passage's conditional metric only.
+
+## Metrics and inference
+
+All four model allocations are compared at the common word positions within
+each passage:
+
+- Human Spearman: rank correspondence with participant-averaged TRT;
+- JS divergence: shape difference between unit-normalized allocations;
+- word-order Wasserstein: transport distance along normalized word order,
+  not a fixation-coordinate or scanpath metric;
+- OB1 Spearman: rank correspondence with OB1 simulated TVT.
+
+`result_table.csv` reports method means and percentile 95% intervals.
+`bootstrap_summary.csv` reports paired improvements, percentile 95% intervals,
+and `permutation_p_two_sided` from the paired sign-flip test. There is no
+bootstrap-derived p-value.
+
+For Provo, the paired unit is a passage. For OneStop, all paragraphs from the
+same article share `cluster_id`; the bootstrap and sign-flip test resample or
+flip the 30 article clusters so paragraphs from one article are not treated as
+independent.
 
 ## Component commands
 
+Every component accepts `--corpus provo` or `--corpus onestop` where relevant:
+
 ```bash
-python cognitive_model_comparsion/main.py prepare-provo
-
-python cognitive_model_comparsion/main.py extract-sigmas \
-  --checkpoint /path/to/checkpoint \
-  --checkpoint-id seed41 \
-  --output-dir cognitive_model_comparsion/outputs/sigmas
-
 python cognitive_model_comparsion/main.py predict-et1 \
-  --sigma-json cognitive_model_comparsion/outputs/sigmas/checkpoint_sigmas.json \
-  --output-dir cognitive_model_comparsion/outputs/et1
-
-python cognitive_model_comparsion/main.py predict-et1 \
+  --corpus onestop \
   --sigma-left 0.41553 \
   --sigma-right 3.46115 \
   --sigma-value-type effective \
   --sigma-source-accuracy 0.76675 \
-  --checkpoint-id oasst1_et1_learned_sigma \
-  --output-dir cognitive_model_comparsion/outputs/et1
+  --checkpoint-id oasst1_et1_trt_only_sigma \
+  --output-dir cognitive_model_comparsion/outputs/onestop_et1
+
+python cognitive_model_comparsion/main.py predict-et1 \
+  --corpus onestop \
+  --sigma-left 0.41553 \
+  --sigma-right 3.46115 \
+  --sigma-value-type effective \
+  --sigma-source-accuracy 0.76675 \
+  --checkpoint-id oasst1_et1_trt_only_sigma \
+  --exclude-special-tokens-from-redistribution \
+  --output-dir cognitive_model_comparsion/outputs/onestop_et1_special_excluded
 
 python cognitive_model_comparsion/main.py simulate-ob1 \
+  --corpus onestop \
   --seeds 0:100 \
   --workers 32 \
-  --n-trials 55 \
-  --output-dir cognitive_model_comparsion/outputs/ob1
+  --n-trials 162 \
+  --output-dir cognitive_model_comparsion/outputs/onestop_ob1
 
 python cognitive_model_comparsion/main.py evaluate \
-  --et1-dir cognitive_model_comparsion/outputs/et1 \
-  --ob1-dir cognitive_model_comparsion/outputs/ob1 \
+  --corpus onestop \
+  --et1-dir cognitive_model_comparsion/outputs/onestop_et1 \
+  --ob1-dir cognitive_model_comparsion/outputs/onestop_ob1 \
   --human-target human_trt_unconditional \
   --bootstrap-samples 10000 \
-  --output-dir cognitive_model_comparsion/outputs/evaluation
+  --seed 20260725 \
+  --with-ob1-clean-passage-sensitivity \
+  --output-dir cognitive_model_comparsion/outputs/onestop_evaluation
 ```
 
-Running `predict-et1` without a checkpoint or sigma JSON is an intentional
-raw-ET1-only path.
+Running `predict-et1` without a sigma source is an intentional raw-ET1-only
+diagnostic path. A full `run` requires a checkpoint or direct sigma pair.
 
-## Verified smoke coverage
+## Interpretation limits
 
-The following were executed locally on the checked-out code:
+The comparison tests whether the OASST1-trained redistribution changes frozen
+ET1 word allocation toward Human TRT and OB1 TVT on unseen text. It does not:
 
-| Gate | Observed |
-|---|---:|
-| Asset SHA-256 verification | passed |
-| Canonical passages / words | 55 / 2,686 |
-| ET2 reconstructed keys | 2,659 / 2,659 |
-| ET2 maximum feature difference | `2.70e-13` |
-| Frozen ET1 passages / word rows | 55 / 2,686 |
-| ET1 token rows / unassigned non-special tokens | 3,715 / 0 |
-| OB1 same-seed repeat | exact |
-| OB1 different-seed fixation rows | 58 / 57 |
-| OB1 parallel vs serial fixation/word outputs | exact |
-| OB1 55-passage, one-reader runtime | 280.18 s |
-| OB1 fixation / word rows | 2,783 / 2,686 |
-| OB1 regression fixations / zero-TVT rows | 619 / 388 |
-| Synthetic redistribution mass checks | 110 / 110 passed |
-| Confirmed direct-sigma ET1 passages / word rows | 55 / 2,686 |
-| Confirmed direct-sigma mass checks | 110 / 110 passed |
-| Cognitive-comparison unit tests | 35 passed |
-
-The redistribution integration smoke used explicitly synthetic widths
-`sigma_left=1.3` and `sigma_right=2.1` only to exercise all 55 passages,
-mass-conservation checks, metrics, bootstrap, CSV generation, and plotting.
-Its metric values are not scientific results and must not be reported.
-
-The final learned-asymmetric manuscript result remains pending until the
-100-simulation OB1 run and Human evaluation finish. The direct effective
-values `0.41553/3.46115` have passed all 55 ET1 passages and redistribution
-mass checks, but those integration outputs are not manuscript metrics.
-
-`--workers` parallelizes independent OB1 seeds with one single-threaded
-subprocess per worker. A fresh runtime first executes one seed to populate the
-shared read-only OB1 caches, then launches the remaining chunks in parallel.
-The merged output restores the original requested seed and simulation order.
-Use `--workers 32` on a 40-core/80-thread host; GPU count does not affect OB1.
-
-## Scope and interpretation
-
-This comparison tests whether OASST1-learned redistribution changes ET1's
-word-level allocation toward Human Provo TRT and OB1-generated TVT. It does
-not:
-
-- fit any ET1, Gaussian, or OB1 parameter to Provo Human TRT;
-- use standardized TorontoCL ET2 values as Human milliseconds;
+- refit ET1, sigma, or OB1 on either Human corpus;
+- treat OB1 virtual-reader count as Human sample size;
 - compare OB1 letter coordinates numerically with T5-token sigma;
+- treat word-order Wasserstein as a scanpath measure;
 - treat Human TRT as a direct measure of covert perceptual span;
-- claim that OB1 contains a physical viewing-distance parameter;
-- replace the existing OASST1 downstream reward-model results.
+- claim that OB1 has a physical viewing-distance parameter;
+- replace the existing OASST1 reward-accuracy experiment.
 
-See `PROVENANCE.md` for word-for-word paper evidence and exact source hashes,
-and `WORK_PLAN.md` for the frozen analysis contract.
+See `PROVENANCE.md` for source quotes, exact hashes, and audit evidence, and
+`WORK_PLAN.md` for the frozen analysis contract.

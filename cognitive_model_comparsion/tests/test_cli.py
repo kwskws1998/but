@@ -4,10 +4,14 @@ import argparse
 import json
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
+import cognitive_model_comparsion.main as cognitive_main
 from cognitive_model_comparsion.main import (
     build_parser,
+    command_run,
+    ensure_prepared,
     parse_seed_specification,
     runtime_manifest,
     validate_predict_sigma_arguments,
@@ -39,6 +43,7 @@ def test_parser_exposes_all_required_subcommands():
         "setup",
         "audit",
         "prepare-provo",
+        "prepare-onestop",
         "extract-sigmas",
         "predict-et1",
         "simulate-ob1",
@@ -57,6 +62,13 @@ def test_trial_count_covers_only_published_provo_passages():
         validate_trial_count(56)
 
 
+def test_trial_count_can_use_the_selected_corpus_size():
+    """Generic OB1 validation uses the canonical table's passage count."""
+    validate_trial_count(162, 162)
+    with pytest.raises(ValueError, match="between 1 and 162"):
+        validate_trial_count(163, 162)
+
+
 def test_runtime_manifest_serializes_path_lists_and_omits_handler(tmp_path):
     """Full-run provenance must be directly JSON serializable."""
     args = argparse.Namespace(
@@ -68,6 +80,98 @@ def test_runtime_manifest_serializes_path_lists_and_omits_handler(tmp_path):
     assert manifest["arguments"]["checkpoint"] == ["seed41", "seed42"]
     assert "handler" not in manifest["arguments"]
     json.dumps(manifest)
+
+
+def test_ensure_prepared_preserves_literal_na_and_validates_onestop(
+    tmp_path,
+    monkeypatch,
+):
+    """Standalone loading preserves tokens and invokes strict table checks."""
+    pd.DataFrame(
+        {
+            "passage_id_zero_based": [0],
+            "passage_text": ["NA"],
+        }
+    ).to_csv(tmp_path / "onestop_passages.csv", index=False)
+    pd.DataFrame(
+        {
+            "passage_id_zero_based": [0],
+            "word_raw": ["NA"],
+            "human_trt_conditional": [float("nan")],
+        }
+    ).to_csv(tmp_path / "onestop_words.csv", index=False)
+    (tmp_path / "onestop_prepare_audit.json").write_text(
+        "{}\n",
+        encoding="utf-8",
+    )
+    observed = {}
+
+    def validate(passages, words, audit, strict):
+        """Capture the exact standalone-load validator inputs."""
+        observed["passages"] = passages
+        observed["words"] = words
+        observed["audit"] = audit
+        observed["strict"] = strict
+
+    monkeypatch.setattr(
+        cognitive_main,
+        "validate_loaded_onestop_model_tables",
+        validate,
+    )
+
+    passages, words = ensure_prepared(tmp_path, "onestop")
+
+    assert passages.iloc[0]["passage_text"] == "NA"
+    assert words.iloc[0]["word_raw"] == "NA"
+    assert pd.isna(words.iloc[0]["human_trt_conditional"])
+    assert observed["strict"] is True
+    assert observed["audit"] == {}
+
+
+def test_ensure_prepared_retains_provo_validator(tmp_path, monkeypatch):
+    """Standalone Provo loading keeps its published-grid validation."""
+    pd.DataFrame(
+        {
+            "passage_id_zero_based": [0],
+            "passage_text": ["one"],
+        }
+    ).to_csv(tmp_path / "provo_passages.csv", index=False)
+    pd.DataFrame(
+        {
+            "passage_id_zero_based": [0],
+            "word_raw": ["one"],
+            "human_trt_conditional": [100.0],
+        }
+    ).to_csv(tmp_path / "provo_words.csv", index=False)
+    pd.DataFrame({"reason": []}).to_csv(
+        tmp_path / "provo_excluded_positions.csv",
+        index=False,
+    )
+    (tmp_path / "provo_prepare_audit.json").write_text(
+        "{}\n",
+        encoding="utf-8",
+    )
+    observed = {}
+
+    def validate(passages, words, excluded, audit):
+        """Capture the existing Provo validation contract."""
+        observed["passages"] = passages
+        observed["words"] = words
+        observed["excluded"] = excluded
+        observed["audit"] = audit
+
+    monkeypatch.setattr(
+        cognitive_main,
+        "validate_canonical_tables",
+        validate,
+    )
+
+    passages, words = ensure_prepared(tmp_path, "provo")
+
+    assert len(passages) == 1
+    assert len(words) == 1
+    assert observed["audit"] == {}
+    assert observed["excluded"].empty
 
 
 def test_predict_et1_rejects_two_sigma_sources():
@@ -103,3 +207,465 @@ def test_parser_accepts_confirmed_direct_sigma_values():
     assert args.checkpoint == []
     assert args.sigma_left == [0.41553]
     assert args.sigma_right == [3.46115]
+
+
+@pytest.mark.parametrize(
+    ("command", "required_arguments"),
+    [
+        (
+            "predict-et1",
+            [
+                "--output-dir",
+                "outputs/et1",
+                "--sigma-left",
+                "0.41553",
+                "--sigma-right",
+                "3.46115",
+                "--checkpoint-id",
+                "oasst1_et1_trt",
+            ],
+        ),
+        (
+            "simulate-ob1",
+            ["--output-dir", "outputs/ob1"],
+        ),
+        (
+            "evaluate",
+            [
+                "--et1-dir",
+                "outputs/et1",
+                "--ob1-dir",
+                "outputs/ob1",
+                "--output-dir",
+                "outputs/evaluation",
+            ],
+        ),
+        (
+            "run",
+            [
+                "--sigma-left",
+                "0.41553",
+                "--sigma-right",
+                "3.46115",
+                "--checkpoint-id",
+                "oasst1_et1_trt",
+            ],
+        ),
+    ],
+)
+def test_corpus_commands_accept_onestop(command, required_arguments):
+    """Every model or evaluation command can select the OneStop corpus."""
+    args = build_parser().parse_args(
+        [command, "--corpus", "onestop", *required_arguments]
+    )
+
+    assert args.corpus == "onestop"
+
+
+@pytest.mark.parametrize(
+    ("command", "required_arguments"),
+    [
+        (
+            "predict-et1",
+            [
+                "--output-dir",
+                "outputs/et1",
+                "--sigma-left",
+                "0.41553",
+                "--sigma-right",
+                "3.46115",
+                "--checkpoint-id",
+                "oasst1_et1_trt",
+            ],
+        ),
+        (
+            "simulate-ob1",
+            ["--output-dir", "outputs/ob1"],
+        ),
+        (
+            "evaluate",
+            [
+                "--et1-dir",
+                "outputs/et1",
+                "--ob1-dir",
+                "outputs/ob1",
+                "--output-dir",
+                "outputs/evaluation",
+            ],
+        ),
+        (
+            "run",
+            [
+                "--sigma-left",
+                "0.41553",
+                "--sigma-right",
+                "3.46115",
+                "--checkpoint-id",
+                "oasst1_et1_trt",
+            ],
+        ),
+    ],
+)
+def test_corpus_commands_default_to_provo(command, required_arguments):
+    """Existing commands retain Provo as their backward-compatible default."""
+    args = build_parser().parse_args([command, *required_arguments])
+
+    assert args.corpus == "provo"
+
+
+def test_run_parser_accepts_special_token_sensitivity():
+    """A full run can request the special-token sensitivity."""
+    args = build_parser().parse_args(
+        [
+            "run",
+            "--sigma-left",
+            "0.41553",
+            "--sigma-right",
+            "3.46115",
+            "--checkpoint-id",
+            "oasst1_et1_trt",
+            "--with-special-token-sensitivity",
+        ]
+    )
+
+    assert args.with_special_token_sensitivity is True
+
+
+@pytest.mark.parametrize("command", ["evaluate", "run"])
+def test_evaluation_commands_accept_ob1_clean_passage_sensitivity(command):
+    """Standalone and full evaluations expose the clean-passage analysis."""
+    if command == "evaluate":
+        required = [
+            "--et1-dir",
+            "outputs/et1",
+            "--ob1-dir",
+            "outputs/ob1",
+            "--output-dir",
+            "outputs/evaluation",
+        ]
+    else:
+        required = [
+            "--sigma-left",
+            "0.41553",
+            "--sigma-right",
+            "3.46115",
+            "--checkpoint-id",
+            "oasst1_et1_trt",
+        ]
+    args = build_parser().parse_args(
+        [
+            command,
+            *required,
+            "--with-ob1-clean-passage-sensitivity",
+        ]
+    )
+
+    assert args.with_ob1_clean_passage_sensitivity is True
+
+
+def test_predict_parser_accepts_special_token_exclusion():
+    """A component ET1 run can exclude special tokens from redistribution."""
+    args = build_parser().parse_args(
+        [
+            "predict-et1",
+            "--output-dir",
+            "outputs/et1",
+            "--sigma-left",
+            "0.41553",
+            "--sigma-right",
+            "3.46115",
+            "--checkpoint-id",
+            "oasst1_et1_trt",
+            "--exclude-special-tokens-from-redistribution",
+        ]
+    )
+
+    assert args.exclude_special_tokens_from_redistribution is True
+
+
+def test_prepare_onestop_accepts_explicit_paths():
+    """OneStop preparation exposes source and destination path overrides."""
+    args = build_parser().parse_args(
+        [
+            "prepare-onestop",
+            "--input-zip",
+            "data/raw/onestop/ordinary.zip",
+            "--output-dir",
+            "data/processed/onestop",
+        ]
+    )
+
+    assert args.input_zip == Path("data/raw/onestop/ordinary.zip")
+    assert args.output_dir == Path("data/processed/onestop")
+
+
+def test_provo_setup_installs_et2_reference_required_by_audit(
+    tmp_path,
+    monkeypatch,
+):
+    """Fresh Provo setup includes the reference tree verified by audit."""
+    args = build_parser().parse_args(
+        [
+            "setup",
+            "--corpus",
+            "provo",
+            "--processed-dir",
+            str(tmp_path / "processed"),
+            "--skip-et1",
+        ]
+    )
+    comparison_assets = []
+    downloads = []
+    verifications = []
+    prepared = []
+
+    monkeypatch.setattr(
+        cognitive_main,
+        "download_comparison_assets",
+        comparison_assets.append,
+    )
+    monkeypatch.setattr(
+        cognitive_main,
+        "download_assets",
+        downloads.append,
+    )
+    monkeypatch.setattr(
+        cognitive_main,
+        "verify_assets",
+        verifications.append,
+    )
+    monkeypatch.setattr(
+        cognitive_main,
+        "prepare_corpus",
+        lambda corpus, processed_dir, onestop_chunksize: prepared.append(
+            (corpus, processed_dir, onestop_chunksize)
+        ),
+    )
+
+    cognitive_main.command_setup(args)
+
+    assert comparison_assets == ["provo"]
+    assert downloads == ["et2-reference"]
+    assert verifications == ["et2-reference"]
+    assert prepared[0][:2] == ("provo", tmp_path / "processed")
+
+
+def test_onestop_full_run_reuses_ob1_for_special_token_sensitivity(
+    tmp_path,
+    monkeypatch,
+):
+    """OneStop orchestration runs OB1 once and evaluates both ET1 policies."""
+    args = build_parser().parse_args(
+        [
+            "run",
+            "--corpus",
+            "onestop",
+            "--processed-dir",
+            str(tmp_path / "processed"),
+            "--runtime-dir",
+            str(tmp_path / "runtime"),
+            "--output-dir",
+            str(tmp_path / "output"),
+            "--sigma-left",
+            "0.41553",
+            "--sigma-right",
+            "3.46115",
+            "--checkpoint-id",
+            "oasst1_et1_trt",
+            "--with-special-token-sensitivity",
+            "--with-ob1-clean-passage-sensitivity",
+        ]
+    )
+    passages = pd.DataFrame(
+        {
+            "passage_id_zero_based": [0, 1],
+            "passage_text": ["one two", "three four"],
+        }
+    )
+    words = pd.DataFrame(
+        {
+            "passage_id_zero_based": [0, 0, 1, 1],
+            "word_id_zero_based": [0, 1, 0, 1],
+        }
+    )
+    predict_calls = []
+    ob1_calls = []
+    evaluate_calls = []
+
+    monkeypatch.setattr(
+        cognitive_main,
+        "download_comparison_assets",
+        lambda corpus: None,
+    )
+    monkeypatch.setattr(
+        cognitive_main,
+        "prepare_corpus",
+        lambda corpus, processed_dir: {},
+    )
+    monkeypatch.setattr(
+        cognitive_main,
+        "ensure_prepared",
+        lambda processed_dir, corpus: (passages, words),
+    )
+    monkeypatch.setattr(
+        cognitive_main,
+        "run_predict_et1",
+        lambda *positional, **keyword: predict_calls.append(
+            (positional, keyword)
+        ),
+    )
+    monkeypatch.setattr(
+        cognitive_main,
+        "run_simulate_ob1",
+        lambda *positional, **keyword: ob1_calls.append(
+            (positional, keyword)
+        ),
+    )
+    monkeypatch.setattr(
+        cognitive_main,
+        "run_evaluate",
+        lambda *positional, **keyword: evaluate_calls.append(
+            (positional, keyword)
+        ),
+    )
+
+    command_run(args)
+
+    assert [
+        call[1]["include_special_tokens_in_redistribution"]
+        for call in predict_calls
+    ] == [True, False]
+    assert len(ob1_calls) == 1
+    assert ob1_calls[0][0][4] == 2
+    assert ob1_calls[0][1]["corpus"] == "onestop"
+    assert len(evaluate_calls) == 4
+    assert {
+        call[0][4] for call in evaluate_calls
+    } == {"human_trt_unconditional", "human_trt_conditional"}
+    assert all(
+        call[1]["corpus"] == "onestop" for call in evaluate_calls
+    )
+    assert all(
+        call[1]["with_ob1_clean_passage_sensitivity"] is True
+        for call in evaluate_calls
+    )
+    manifest = json.loads(
+        (tmp_path / "output/run_manifest.json").read_text()
+    )
+    assert manifest["status"] == "complete"
+    assert "completed_at_utc" in manifest
+
+
+def test_run_evaluate_writes_nested_ob1_clean_sensitivity(
+    tmp_path,
+    monkeypatch,
+):
+    """Clean passages produce a nested bundle without replacing primary rows."""
+    processed_dir = tmp_path / "processed"
+    et1_dir = tmp_path / "et1"
+    ob1_dir = tmp_path / "ob1"
+    output_dir = tmp_path / "evaluation"
+    et1_dir.mkdir()
+    ob1_dir.mkdir()
+    pd.DataFrame({"placeholder": [1]}).to_csv(
+        et1_dir / "et1_word_values.csv",
+        index=False,
+    )
+    pd.DataFrame({"placeholder": [1]}).to_csv(
+        ob1_dir / "ob1_word_values.csv",
+        index=False,
+    )
+    (et1_dir / "et1_inference_audit.json").write_text(
+        json.dumps({"corpus": "onestop"}),
+        encoding="utf-8",
+    )
+    (ob1_dir / "ob1_aggregation_audit.json").write_text(
+        json.dumps({"corpus": "onestop"}),
+        encoding="utf-8",
+    )
+    word_values = pd.DataFrame(
+        {
+            "checkpoint_id": ["seed"] * 3,
+            "passage_id_zero_based": [0, 1, 2],
+            "et1_raw_word_trt": [1.0, 1.0, 1.0],
+            "et1_symmetric_word_trt": [1.0, 1.0, 1.0],
+            "et1_asymmetric_word_trt": [1.0, 1.0, 1.0],
+            "ob1_tvt": [1.0, 1.0, 1.0],
+        }
+    )
+    passage_metrics = pd.DataFrame(
+        {
+            "checkpoint_id": ["seed"] * 3,
+            "passage_id_zero_based": [0, 1, 2],
+            "method": ["et1_raw"] * 3,
+            "cluster_id": ["article-a", "article-b", "article-c"],
+            "original_word_count": [3, 3, 3],
+            "ob1_compatible_word_count": [3, 2, 3],
+            "ob1_incompatible_words_excluded": [0, 1, 0],
+            "word_count": [3, 2, 3],
+            "human_missing_words_excluded": [0, 0, 0],
+        }
+    )
+    writes = []
+    monkeypatch.setattr(
+        cognitive_main,
+        "ensure_prepared",
+        lambda processed, corpus: (pd.DataFrame(), pd.DataFrame()),
+    )
+    monkeypatch.setattr(
+        cognitive_main,
+        "merge_word_values",
+        lambda canonical, et1, ob1: word_values.copy(),
+    )
+    monkeypatch.setattr(
+        cognitive_main,
+        "evaluate_passages",
+        lambda values, target: passage_metrics.copy(),
+    )
+    monkeypatch.setattr(
+        cognitive_main,
+        "summarize_methods",
+        lambda *args, **kwargs: pd.DataFrame({"summary": [1]}),
+    )
+    monkeypatch.setattr(
+        cognitive_main,
+        "summarize_methods_by_checkpoint",
+        lambda *args, **kwargs: pd.DataFrame({"summary": [1]}),
+    )
+    monkeypatch.setattr(
+        cognitive_main,
+        "paired_contrasts",
+        lambda *args, **kwargs: pd.DataFrame({"summary": [1]}),
+    )
+    monkeypatch.setattr(
+        cognitive_main,
+        "write_evaluation_outputs",
+        lambda *args: writes.append(args),
+    )
+
+    primary_audit = cognitive_main.run_evaluate(
+        processed_dir,
+        et1_dir,
+        ob1_dir,
+        output_dir,
+        "human_trt_conditional",
+        bootstrap_samples=100,
+        seed=7,
+        corpus="onestop",
+        with_ob1_clean_passage_sensitivity=True,
+    )
+
+    assert len(writes) == 2
+    assert writes[0][0] == output_dir
+    assert set(writes[0][2]["passage_id_zero_based"]) == {0, 1, 2}
+    assert writes[1][0] == output_dir / "ob1_clean_passages"
+    assert set(writes[1][2]["passage_id_zero_based"]) == {0, 2}
+    assert primary_audit["passages"] == 3
+    assert "sensitivity_policy" not in primary_audit
+    clean_audit = writes[1][6]
+    assert clean_audit["passages"] == 2
+    assert clean_audit["source_passages"] == 3
+    assert clean_audit["excluded_passages"] == 1
+    assert clean_audit["excluded_passage_ids"] == [1]
+    assert clean_audit["primary_results_unchanged"] is True
+    assert clean_audit["resampling_clusters"] == 2

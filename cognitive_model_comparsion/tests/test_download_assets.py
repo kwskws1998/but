@@ -7,11 +7,15 @@ import zipfile
 
 import pytest
 
+import cognitive_model_comparsion.download_assets as download_module
 from cognitive_model_comparsion.download_assets import (
+    download_assets,
     extract_subtlex,
+    load_manifest,
     validate_tar_members,
     verify_file,
     verify_tree,
+    verify_tree_against_archive,
 )
 
 
@@ -84,3 +88,57 @@ def test_extract_subtlex_rejects_unexpected_members(tmp_path):
 
     with pytest.raises(ValueError, match="Unexpected SUBTLEX-UK"):
         extract_subtlex(archive_path, asset)
+
+
+def test_tree_verification_rejects_modified_extracted_source(tmp_path):
+    """Pinned archives detect edits outside the small sentinel set."""
+    archive_path = tmp_path / "source.tar.gz"
+    content = b"pinned source"
+    with tarfile.open(archive_path, "w:gz") as archive:
+        member = tarfile.TarInfo("source-root/src/runtime.py")
+        member.size = len(content)
+        archive.addfile(member, io.BytesIO(content))
+    destination = tmp_path / "source"
+    (destination / "src").mkdir(parents=True)
+    extracted_path = destination / "src/runtime.py"
+    extracted_path.write_bytes(content)
+
+    verify_tree_against_archive(archive_path, destination, "source")
+    extracted_path.write_bytes(b"locally modified")
+
+    with pytest.raises(ValueError, match="differs from pinned archive"):
+        verify_tree_against_archive(archive_path, destination, "source")
+
+
+def test_onestop_manifest_pins_official_ordinary_archive():
+    """OneStop metadata pins the official Ordinary interest-area ZIP exactly."""
+    asset = load_manifest()["onestop_ordinary_interest_areas"]
+
+    assert asset == {
+        "source": "https://osf.io/download/xkgfz/",
+        "landing_page": "https://osf.io/zn9sq/",
+        "file_api": "https://api.osf.io/v2/files/683738581943ba131a53944c/",
+        "destination": "data/raw/onestop/ia_Paragraph_ordinary.csv.zip",
+        "archive_member": "ia_Paragraph_ordinary.csv",
+        "bytes": 177291322,
+        "sha256": (
+            "8883478946ee52381e7057683c9e84dc"
+            "69fcea9054acc34f0c900463a6b546e9"
+        ),
+        "license_eye_tracking": "CC BY 4.0",
+        "license_text_and_annotations": "CC BY-SA 4.0",
+    }
+
+
+def test_onestop_download_route_selects_only_pinned_archive(monkeypatch):
+    """The OneStop asset route delegates once without touching other assets."""
+    calls = []
+
+    def record_download(asset, destination_key):
+        calls.append((asset, destination_key))
+
+    monkeypatch.setattr(download_module, "download_file", record_download)
+    download_assets("onestop")
+
+    asset = load_manifest()["onestop_ordinary_interest_areas"]
+    assert calls == [(asset, "destination")]

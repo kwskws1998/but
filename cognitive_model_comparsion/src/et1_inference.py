@@ -146,6 +146,38 @@ def apply_redistributors(
     return symmetric_values, asymmetric_values
 
 
+def build_redistribution_attention_mask(
+    attention_mask: torch.Tensor,
+    special_tokens_mask: list[int] | torch.Tensor,
+    include_special_tokens: bool = True,
+) -> torch.Tensor:
+    """Build the production-faithful or special-token-excluding mask."""
+    if attention_mask.dim() != 2:
+        raise ValueError(
+            "attention_mask must be two-dimensional, got "
+            f"{tuple(attention_mask.shape)}"
+        )
+    special_mask = torch.as_tensor(
+        special_tokens_mask,
+        device=attention_mask.device,
+    )
+    if special_mask.dim() == 1:
+        if attention_mask.shape[0] != 1:
+            raise ValueError(
+                "A one-dimensional special_tokens_mask requires batch size 1"
+            )
+        special_mask = special_mask.unsqueeze(0)
+    if special_mask.shape != attention_mask.shape:
+        raise ValueError(
+            "special_tokens_mask shape does not match attention_mask: "
+            f"{tuple(special_mask.shape)} != {tuple(attention_mask.shape)}"
+        )
+    if include_special_tokens:
+        return attention_mask.clone()
+    non_special = special_mask.eq(0).to(attention_mask.dtype)
+    return attention_mask * non_special
+
+
 def validate_mass_conservation(
     before: torch.Tensor,
     after: torch.Tensor,
@@ -163,6 +195,162 @@ def validate_mass_conservation(
             f"Redistribution mass changed from {before_mass} to {after_mass}"
         )
     return difference
+
+
+def redistribution_mass_audit(
+    before: torch.Tensor,
+    after: torch.Tensor,
+    attention_mask: torch.Tensor,
+    redistribution_mask: torch.Tensor,
+    special_tokens_mask: list[int] | torch.Tensor,
+    assignments: list[int | None],
+    evaluable_word_ids: set[int] | None = None,
+) -> dict[str, float]:
+    """Summarize conserved, word-assigned, and unassigned-special mass."""
+    if before.shape != after.shape:
+        raise ValueError(
+            f"Mass audit shape mismatch: {before.shape} != {after.shape}"
+        )
+    if before.shape != attention_mask.shape:
+        raise ValueError(
+            "Mass audit attention shape does not match values: "
+            f"{attention_mask.shape} != {before.shape}"
+        )
+    if redistribution_mask.shape != before.shape:
+        raise ValueError(
+            "Mass audit redistribution mask does not match values: "
+            f"{redistribution_mask.shape} != {before.shape}"
+        )
+    if before.shape[0] != 1 or len(assignments) != before.shape[1]:
+        raise ValueError(
+            "Mass audit requires one passage and one assignment per token"
+        )
+
+    special_mask = torch.as_tensor(
+        special_tokens_mask,
+        device=before.device,
+    )
+    if special_mask.dim() == 1:
+        special_mask = special_mask.unsqueeze(0)
+    if special_mask.shape != before.shape:
+        raise ValueError(
+            "Mass audit special-token shape does not match values: "
+            f"{special_mask.shape} != {before.shape}"
+        )
+
+    attention = attention_mask.to(before.dtype)
+    selected = redistribution_mask.to(before.dtype)
+    assigned = torch.tensor(
+        [[word_id is not None for word_id in assignments]],
+        dtype=torch.bool,
+        device=before.device,
+    )
+    assigned_word_ids = {
+        int(word_id) for word_id in assignments if word_id is not None
+    }
+    if evaluable_word_ids is None:
+        evaluable_word_ids = assigned_word_ids
+    else:
+        evaluable_word_ids = {int(word_id) for word_id in evaluable_word_ids}
+    unknown_evaluable_ids = evaluable_word_ids - assigned_word_ids
+    if unknown_evaluable_ids:
+        raise ValueError(
+            "Evaluable words do not have assigned ET1 tokens: "
+            f"{sorted(unknown_evaluable_ids)}"
+        )
+    evaluable = torch.tensor(
+        [
+            [
+                word_id is not None and int(word_id) in evaluable_word_ids
+                for word_id in assignments
+            ]
+        ],
+        dtype=torch.bool,
+        device=before.device,
+    )
+    special = special_mask.ne(0)
+    if bool((assigned & special).any()):
+        raise ValueError("A special token cannot also be assigned to a word")
+
+    word_mask = (assigned & attention_mask.ne(0)).to(before.dtype)
+    evaluable_word_mask = (
+        evaluable & attention_mask.ne(0)
+    ).to(before.dtype)
+    unassigned_special_mask = (
+        special & ~assigned & attention_mask.ne(0)
+    ).to(before.dtype)
+
+    def masked_mass(values: torch.Tensor, mask: torch.Tensor) -> float:
+        """Return scalar mass under one token mask."""
+        return float((values * mask).sum().item())
+
+    raw_valid_mass = masked_mass(before, selected)
+    redistributed_valid_mass = masked_mass(after, selected)
+    raw_attention_mass = masked_mass(before, attention)
+    redistributed_attention_mass = masked_mass(after, attention)
+    raw_word_mass = masked_mass(before, word_mask)
+    redistributed_word_mass = masked_mass(after, word_mask)
+    raw_evaluable_word_mass = masked_mass(before, evaluable_word_mask)
+    redistributed_evaluable_word_mass = masked_mass(
+        after,
+        evaluable_word_mask,
+    )
+    raw_special_mass = masked_mass(before, unassigned_special_mask)
+    redistributed_special_mass = masked_mass(
+        after,
+        unassigned_special_mask,
+    )
+    if abs(raw_word_mass) <= 1e-12:
+        retention_fraction = float("nan")
+    else:
+        retention_fraction = redistributed_word_mass / raw_word_mass
+    if abs(raw_attention_mass) <= 1e-12:
+        raw_evaluable_fraction = float("nan")
+    else:
+        raw_evaluable_fraction = (
+            raw_evaluable_word_mass / raw_attention_mass
+        )
+    if abs(redistributed_attention_mass) <= 1e-12:
+        redistributed_evaluable_fraction = float("nan")
+    else:
+        redistributed_evaluable_fraction = (
+            redistributed_evaluable_word_mass
+            / redistributed_attention_mass
+        )
+    if abs(raw_evaluable_word_mass) <= 1e-12:
+        evaluable_retention = float("nan")
+    else:
+        evaluable_retention = (
+            redistributed_evaluable_word_mass / raw_evaluable_word_mass
+        )
+
+    return {
+        "raw_valid_token_mass": raw_valid_mass,
+        "redistributed_valid_token_mass": redistributed_valid_mass,
+        "valid_token_mass_difference": (
+            redistributed_valid_mass - raw_valid_mass
+        ),
+        "raw_attention_token_mass": raw_attention_mass,
+        "redistributed_attention_token_mass": redistributed_attention_mass,
+        "raw_word_assigned_mass": raw_word_mass,
+        "redistributed_word_assigned_mass": redistributed_word_mass,
+        "raw_evaluable_word_mass": raw_evaluable_word_mass,
+        "redistributed_evaluable_word_mass": (
+            redistributed_evaluable_word_mass
+        ),
+        "raw_evaluable_mass_fraction_of_attention": (
+            raw_evaluable_fraction
+        ),
+        "redistributed_evaluable_mass_fraction_of_attention": (
+            redistributed_evaluable_fraction
+        ),
+        "evaluable_mass_retention_vs_raw": evaluable_retention,
+        "raw_unassigned_special_mass": raw_special_mass,
+        "redistributed_unassigned_special_mass": (
+            redistributed_special_mass
+        ),
+        "word_mass_retention_fraction": retention_fraction,
+    }
 
 
 class ET1NativePredictor:
@@ -264,11 +452,13 @@ def run_et1_inference(
     canonical_words: pd.DataFrame,
     sigma_records: list[dict],
     predictor: ET1NativePredictor,
+    include_special_tokens_in_redistribution: bool = True,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
-    """Generate raw and checkpoint-specific redistributed ET1 tables."""
+    """Generate ET1 tables with production-faithful special-token handling."""
     token_rows = []
     word_rows = []
     mass_rows = []
+    metric_evaluable_word_count = 0
     effective_records = sigma_records or [
         {
             "checkpoint_id": "raw_only",
@@ -298,8 +488,37 @@ def run_et1_inference(
         predicted = predictor.predict(passage.passage_text)
         raw = predicted["values"]
         mask = predicted["attention_mask"]
+        redistribution_mask = build_redistribution_attention_mask(
+            mask,
+            predicted["special_tokens_mask"],
+            include_special_tokens=(
+                include_special_tokens_in_redistribution
+            ),
+        )
         assignments = predicted["word_assignments"]
         word_count = len(predicted["word_spans"])
+        passage_words = canonical_by_passage[
+            int(passage.passage_id_zero_based)
+        ]
+        if "ob1_evaluable" in passage_words:
+            eligibility = passage_words["ob1_evaluable"]
+            if eligibility.dtype != bool:
+                normalized = eligibility.astype(str).str.lower()
+                if not normalized.isin({"true", "false"}).all():
+                    raise ValueError(
+                        "Canonical ob1_evaluable values must be boolean"
+                    )
+                eligibility = normalized.eq("true")
+            evaluation_words = passage_words.loc[eligibility]
+        else:
+            evaluation_words = passage_words
+        metric_evaluable_word_count += len(evaluation_words)
+        evaluable_word_ids = {
+            int(word_id)
+            for word_id in evaluation_words[
+                "word_id_zero_based"
+            ].tolist()
+        }
         raw_numpy = raw[0].numpy()
         raw_word_totals = aggregate_tokens_to_words(
             raw_numpy,
@@ -309,24 +528,50 @@ def run_et1_inference(
 
         for sigma_record in effective_records:
             checkpoint_id = sigma_record["checkpoint_id"]
+            mass_context = {
+                "checkpoint_id": checkpoint_id,
+                "passage_id_zero_based": passage.passage_id_zero_based,
+                "special_tokens_included_in_redistribution": (
+                    include_special_tokens_in_redistribution
+                ),
+                "redistribution_special_token_policy": (
+                    "include" if include_special_tokens_in_redistribution
+                    else "exclude"
+                ),
+            }
+            mass_rows.append(
+                {
+                    **mass_context,
+                    "condition": "et1_raw",
+                    **redistribution_mass_audit(
+                        raw,
+                        raw,
+                        mask,
+                        redistribution_mask,
+                        predicted["special_tokens_mask"],
+                        assignments,
+                        evaluable_word_ids,
+                    ),
+                }
+            )
             if sigma_record["checkpoint"] is None:
                 symmetric = asymmetric = None
                 symmetric_word_totals = asymmetric_word_totals = {}
             else:
                 symmetric, asymmetric = apply_redistributors(
                     raw,
-                    mask,
+                    redistribution_mask,
                     *redistributors[checkpoint_id],
                 )
                 symmetric_difference = validate_mass_conservation(
                     raw,
                     symmetric,
-                    mask,
+                    redistribution_mask,
                 )
                 asymmetric_difference = validate_mass_conservation(
                     raw,
                     asymmetric,
-                    mask,
+                    redistribution_mask,
                 )
                 symmetric_word_totals = aggregate_tokens_to_words(
                     symmetric[0].numpy(),
@@ -341,23 +586,47 @@ def run_et1_inference(
                 mass_rows.extend(
                     [
                         {
-                            "checkpoint_id": checkpoint_id,
-                            "passage_id_zero_based": (
-                                passage.passage_id_zero_based
-                            ),
+                            **mass_context,
                             "condition": "et1_symmetric",
-                            "valid_token_mass_difference": symmetric_difference,
+                            **redistribution_mass_audit(
+                                raw,
+                                symmetric,
+                                mask,
+                                redistribution_mask,
+                                predicted["special_tokens_mask"],
+                                assignments,
+                                evaluable_word_ids,
+                            ),
                         },
                         {
-                            "checkpoint_id": checkpoint_id,
-                            "passage_id_zero_based": (
-                                passage.passage_id_zero_based
-                            ),
+                            **mass_context,
                             "condition": "et1_asymmetric",
-                            "valid_token_mass_difference": asymmetric_difference,
+                            **redistribution_mass_audit(
+                                raw,
+                                asymmetric,
+                                mask,
+                                redistribution_mask,
+                                predicted["special_tokens_mask"],
+                                assignments,
+                                evaluable_word_ids,
+                            ),
                         },
                     ]
                 )
+                if not math.isclose(
+                    mass_rows[-2]["valid_token_mass_difference"],
+                    symmetric_difference,
+                    rel_tol=0.0,
+                    abs_tol=1e-7,
+                ):
+                    raise ValueError("Symmetric mass-audit difference mismatch")
+                if not math.isclose(
+                    mass_rows[-1]["valid_token_mass_difference"],
+                    asymmetric_difference,
+                    rel_tol=0.0,
+                    abs_tol=1e-7,
+                ):
+                    raise ValueError("Asymmetric mass-audit difference mismatch")
 
             for token_index, (
                 token_id,
@@ -389,6 +658,9 @@ def run_et1_inference(
                         "character_end": offset[1],
                         "is_special": is_special,
                         "attention_mask": int(attention),
+                        "redistribution_mask": int(
+                            redistribution_mask[0, token_index]
+                        ),
                         "word_id_zero_based": word_id,
                         "et1_raw_token_trt": raw_value,
                         "et1_symmetric_token_trt": (
@@ -404,9 +676,6 @@ def run_et1_inference(
                     }
                 )
 
-            passage_words = canonical_by_passage[
-                int(passage.passage_id_zero_based)
-            ]
             for word in passage_words.itertuples():
                 word_id = int(word.word_id_zero_based)
                 word_rows.append(
@@ -435,12 +704,20 @@ def run_et1_inference(
     audit = {
         "passages": int(passages["passage_id_zero_based"].nunique()),
         "canonical_words": len(canonical_words),
+        "metric_evaluable_words": int(metric_evaluable_word_count),
         "checkpoint_ids": [
             str(record["checkpoint_id"]) for record in effective_records
         ],
         "token_rows": len(token_rows),
         "word_rows": len(word_rows),
         "mass_checks": len(mass_rows),
+        "special_tokens_included_in_redistribution": (
+            include_special_tokens_in_redistribution
+        ),
+        "redistribution_special_token_policy": (
+            "include" if include_special_tokens_in_redistribution
+            else "exclude"
+        ),
         "predictor_device": predictor.predictor.device.type,
         "predictor_cache_signature": predictor.predictor.cache_signature,
     }

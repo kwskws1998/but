@@ -16,6 +16,31 @@ training corpora. It does not prove that no Provo text was present in any
 unreported pretraining resource, so the eventual paper should say “not among
 the reported ET1 training corpora,” not make a stronger contamination claim.
 
+### GazeReward ET1 token coordinate
+
+The supplied GazeReward PDF labels the relevant Appendix table:
+
+> “Example of mapping TRT between two different tokenizers. TRT (1) represents the process used for the first ET predictor, and TRT (2) for the second ET predictor.”
+
+Source: `2410.01532v3.pdf`, Table 8, and
+[arXiv 2410.01532](https://arxiv.org/pdf/2410.01532).
+
+The retained values `sigma_left=0.41553` and `sigma_right=3.46115` came from
+the ET1 + GazeConcat, TRT-only condition. Consequently the primary
+redistribution is applied on the native ET1/T5 token sequence, with the same
+production attention-mask semantics used during OASST1 training. Only after
+redistribution are non-special T5 tokens associated to corpus words by exact
+character offsets and summed:
+
+\[
+E_i=\sum_{t\in word(i)}TRT_t^{ET1}.
+\]
+
+This word sum is the common external-evaluation coordinate, not a refit or a
+conversion of sigma to word, letter, or visual-angle units. The
+special-token-excluded run changes only the redistribution mask; it does not
+change this aggregation.
+
 ### Provo used for the ET2 prediction model
 
 The supplied GazeReward PDF identifies its ET2 architecture as:
@@ -101,12 +126,61 @@ the literal data-availability wording, the downloaded snapshot contains only
 `.gitignore` placeholders under its data directories. The Provo files and
 SUBTLEX-UK resource are absent.
 
+### OneStop external-validation corpus
+
+The OneStop data descriptor reports the corpus structure:
+
+> “with a total of 162 paragraphs across the 30 articles.”
+
+For the released word coordinate, it states:
+
+> “Interest Areas in the Data Viewer reports span whitespace tokenized words.”
+
+Sources:
+[Berzak et al. (2025), Scientific Data](https://www.nature.com/articles/s41597-025-06272-2)
+and the
+[official variable documentation](https://lacclab.github.io/OneStop-Eye-Movements/variables).
+
+OneStop contains 360 participants across two equally assigned reading
+regimes. This experiment deliberately uses only the official
+[OneStop Ordinary Reading](https://osf.io/zn9sq/) Paragraph Interest Area ZIP,
+then selects non-practice, non-repeated, Advanced paragraphs. The resulting
+live archive audit contains 180 Ordinary/Gathering participants, 30 articles,
+162 paragraphs, and 19,440 exact whitespace-token word positions. These are
+observed release counts, not counts inferred solely from the paper.
+
+The official known-issues page states:
+
+> “In some cases this resulted in 11 lines of text instead of 10.”
+
+It also warns:
+
+> “this results in two different versions of text.”
+
+Source:
+[OneStop Known Issues](https://lacclab.github.io/OneStop-Eye-Movements/known_issues.html).
+
+This is why preparation does not silently collapse exact text variants. It
+selects the variant read by the most participants for each base paragraph,
+uses deterministic lexical and SHA-256 tie-breaks, and saves every selected
+and excluded variant.
+
+The official repository states:
+
+> “The eye tracking data, code, and anonymized participant questionnaire responses are released under a Creative Commons Attribution 4.0 International License.”
+
+Source:
+[OneStop official repository](https://github.com/lacclab/OneStop-Eye-Movements#license).
+The same license section assigns the underlying text and auxiliary OneStopQA
+annotations to CC BY-SA 4.0.
+
 ## Downloaded assets
 
 | Asset | Exact source | Local size | SHA-256 | License |
 |---|---|---:|---|---|
 | Provo eye tracking | [Official OSF file](https://osf.io/download/a32be/) | 69,662,713 B | `38aedcb29bc9171009916eb2bcc2375729f104a2a1005c64a563da94b611b9e7` | CC BY 4.0 |
 | Provo predictability norms | [Official OSF file](https://osf.io/download/e4a2m/) | 14,301,138 B | `965fb72eab55f51e08fc1b5622638b85b1085976ff513e2a7bee4adbbd4e6489` | CC BY 4.0 |
+| OneStop Ordinary Paragraph IA ZIP | [Official OSF file](https://osf.io/download/xkgfz/) | 177,291,322 B | `8883478946ee52381e7057683c9e84dc69fcea9054acc34f0c900463a6b546e9` | Eye data CC BY 4.0; text/annotations CC BY-SA 4.0 |
 | OB1–Provo source archive | [Pinned GitHub commit](https://github.com/dritlopes/language_models_outperform_cloze_predictability_in_a_cognitive_model_of_reading/commit/56b8d6401d1c2c1886a9c6ff9df4a143c6f2c12d) | 55,660 B | `beb9c571c2264f8382fd24a9a5147ed3c7e67a7774d1414e24ba46a5ffb61b1e` | No license file observed |
 | ET2 TorontoCL source archive | [Pinned GitHub commit](https://github.com/SPOClab-ca/cmcl-shared-task/commit/19d7af001ab3eab8aa4af02e5a4d11fa204bbedd) | 1,475,665 B | `7048746a5747807fc87e354ba7f902395a2dbe621cc5f26fc394a630e16d44b2` | No license file observed |
 | ET2 processed `provo.csv` inside archive | Same pinned archive | 275,651 B | `9bb4c367c8eb95b684065a069e1dd0a21430f5eded0fc20fa6676056cb0e93e4` | No separate license observed |
@@ -174,6 +248,58 @@ published OB1 evaluator, the human and model grids match exactly at 2,686
 positions across all 55 passages. The experiment must save both the raw audit
 and the corrected alignment table.
 
+## OneStop archive and preparation audit
+
+The official `ia_Paragraph_ordinary.csv.zip` is retained compressed. Its
+single data member, `ia_Paragraph_ordinary.csv`, is 2,455,810,901 bytes when
+uncompressed. Preparation reads only required columns in 50,000-row chunks
+directly from the ZIP; it never writes the expanded CSV.
+
+The strict preparation audit currently records:
+
+| Check | Observed |
+|---|---:|
+| Raw Interest Area rows | 1,104,883 |
+| Advanced, non-practice Ordinary rows | 583,051 |
+| Ordinary/Gathering participants | 180 |
+| Article clusters | 30 |
+| Base paragraphs | 162 |
+| Participant-paragraph trials before variant selection | 4,859 |
+| Participant-paragraph trials retained | 4,759 |
+| Minority-variant trials excluded | 100 |
+| Paragraphs with multiple exact text variants | 11 |
+| Canonical whitespace words | 19,440 |
+| Retained participant-word rows | 570,641 |
+| Reader-count range per selected paragraph | 17–30 |
+| Punctuation-only words incompatible with OB1 normalization | 95 |
+| Paragraphs with zero OB1 transformations | 107 |
+| Article clusters represented by clean paragraphs | 28 |
+| Paragraphs containing at least one transformed position | 55 |
+
+Variant selection uses participant count only; it never reads Human TRT or
+model output. The 19,440-word Human/ET1 grid remains intact. The 95
+punctuation-only words are marked `ob1_evaluable=False`, recorded in
+`ob1_token_transformations.csv`, and excluded from every method on the common
+Human–ET1–OB1 metric grid.
+
+Although common-grid exclusion prevents a direct metric at those positions,
+an OB1 surrogate used while simulating the paragraph could influence
+neighboring fixations. The optional clean-passage sensitivity therefore
+selects the 107 paragraphs with
+`ob1_incompatible_words_excluded == 0`, excludes all 55 affected paragraphs,
+and writes separate results under `ob1_clean_passages/`. The retained
+paragraphs span 28 resampling clusters. This does not alter the 162-paragraph
+primary analysis.
+
+`IA_DWELL_TIME` is preserved as released. The unconditional target includes
+zero values. The conditional target averages positive values only; when no
+retained reader has positive dwell on a word, the saved conditional value is
+missing and that word is excluded only from the conditional metric.
+
+Paragraphs from the same OneStop article are not independent experimental
+units. The evaluator therefore uses the 30 article IDs as resampling clusters
+for percentile confidence intervals and paired sign-flip tests.
+
 ## Upstream OB1 reproducibility findings
 
 The pinned code could not be executed reproducibly as published without a
@@ -221,3 +347,8 @@ execution path; they are not a result condition. Actual learned
 redistribution requires the reported OASST1 checkpoint state files. The
 55-passage OB1 run used one virtual reader and is a pre-run gate, not the
 paper's 100-reader condition.
+
+The OneStop official archive, strict 162-paragraph canonical build, exact
+variant audit, and OB1 compatibility audit have been executed. The complete
+100-seed OneStop OB1 simulation and its joined scientific metric tables have
+not been executed in this checkout and must not be reported as results.

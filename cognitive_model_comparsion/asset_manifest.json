@@ -17,6 +17,17 @@
       "sha256": "965fb72eab55f51e08fc1b5622638b85b1085976ff513e2a7bee4adbbd4e6489",
       "license": "CC BY 4.0"
     },
+    "onestop_ordinary_interest_areas": {
+      "source": "https://osf.io/download/xkgfz/",
+      "landing_page": "https://osf.io/zn9sq/",
+      "file_api": "https://api.osf.io/v2/files/683738581943ba131a53944c/",
+      "destination": "data/raw/onestop/ia_Paragraph_ordinary.csv.zip",
+      "archive_member": "ia_Paragraph_ordinary.csv",
+      "bytes": 177291322,
+      "sha256": "8883478946ee52381e7057683c9e84dc69fcea9054acc34f0c900463a6b546e9",
+      "license_eye_tracking": "CC BY 4.0",
+      "license_text_and_annotations": "CC BY-SA 4.0"
+    },
     "ob1_provo_2024": {
       "source": "https://github.com/dritlopes/language_models_outperform_cloze_predictability_in_a_cognitive_model_of_reading/archive/56b8d6401d1c2c1886a9c6ff9df4a143c6f2c12d.tar.gz",
       "landing_page": "https://github.com/dritlopes/language_models_outperform_cloze_predictability_in_a_cognitive_model_of_reading",
