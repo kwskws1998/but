@@ -6,14 +6,12 @@ from typing import Optional, Union
 
 import torch
 import torch.nn as nn
-from tokenizeraligner.models.tokenizer_aligner import TokenizerAligner
 
 from models.et_checkpoint import ensure_et1_checkpoint
 from models.et1_tokenizer import (
     ET1_TOKENIZER_SIGNATURE,
     load_et1_tokenizer,
 )
-from models.fixations_aligner import FixationsAligner
 from models.tokenizer_fingerprint import tokenizer_fingerprint
 
 
@@ -157,6 +155,9 @@ class FixationsPredictor_1:
                 text_tokenized_fix,
                 sentences,
             )
+
+        from tokenizeraligner.models.tokenizer_aligner import TokenizerAligner
+        from models.fixations_aligner import FixationsAligner
 
         fixations_list = fixations.detach().cpu().tolist()
         tokens_id_mapped = TokenizerAligner().align_tokens(

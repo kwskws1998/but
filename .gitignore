@@ -43,3 +43,16 @@ training_args.bin
 /outputs/
 /reward_model/
 /wandb/
+
+# Reviewer-only cognitive-model comparison assets
+/cognitive_model_comparsion/data/raw/*
+!/cognitive_model_comparsion/data/raw/README.md
+/cognitive_model_comparsion/data/processed/*
+!/cognitive_model_comparsion/data/processed/README.md
+/cognitive_model_comparsion/data/ob1_runtime/
+/cognitive_model_comparsion/data/runtime_cache/
+/cognitive_model_comparsion/outputs/*
+!/cognitive_model_comparsion/outputs/README.md
+/cognitive_model_comparsion/third_party/_archives/
+/cognitive_model_comparsion/third_party/ob1_reader_provo_2024/
+/cognitive_model_comparsion/third_party/et2_torontocl_cmcl_2021/

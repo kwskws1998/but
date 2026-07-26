@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "assets": {
+    "provo_eye_tracking": {
+      "source": "https://osf.io/download/a32be/",
+      "landing_page": "https://osf.io/sjefs/",
+      "destination": "data/raw/Provo_Corpus-Eyetracking_Data.csv",
+      "bytes": 69662713,
+      "sha256": "38aedcb29bc9171009916eb2bcc2375729f104a2a1005c64a563da94b611b9e7",
+      "license": "CC BY 4.0"
+    },
+    "provo_predictability": {
+      "source": "https://osf.io/download/e4a2m/",
+      "landing_page": "https://osf.io/sjefs/",
+      "destination": "data/raw/Provo_Corpus-Predictability_Norms.csv",
+      "bytes": 14301138,
+      "sha256": "965fb72eab55f51e08fc1b5622638b85b1085976ff513e2a7bee4adbbd4e6489",
+      "license": "CC BY 4.0"
+    },
+    "ob1_provo_2024": {
+      "source": "https://github.com/dritlopes/language_models_outperform_cloze_predictability_in_a_cognitive_model_of_reading/archive/56b8d6401d1c2c1886a9c6ff9df4a143c6f2c12d.tar.gz",
+      "landing_page": "https://github.com/dritlopes/language_models_outperform_cloze_predictability_in_a_cognitive_model_of_reading",
+      "archive_destination": "third_party/_archives/ob1_reader_provo_2024_56b8d640.tar.gz",
+      "extract_destination": "third_party/ob1_reader_provo_2024",
+      "commit": "56b8d6401d1c2c1886a9c6ff9df4a143c6f2c12d",
+      "bytes": 55660,
+      "sha256": "beb9c571c2264f8382fd24a9a5147ed3c7e67a7774d1414e24ba46a5ffb61b1e",
+      "license": null
+    },
+    "et2_torontocl_cmcl_2021": {
+      "source": "https://github.com/SPOClab-ca/cmcl-shared-task/archive/19d7af001ab3eab8aa4af02e5a4d11fa204bbedd.tar.gz",
+      "landing_page": "https://github.com/SPOClab-ca/cmcl-shared-task",
+      "paper": "https://aclanthology.org/2021.cmcl-1.9/",
+      "archive_destination": "third_party/_archives/et2_torontocl_cmcl_2021_19d7af0.tar.gz",
+      "extract_destination": "third_party/et2_torontocl_cmcl_2021",
+      "commit": "19d7af001ab3eab8aa4af02e5a4d11fa204bbedd",
+      "bytes": 1475665,
+      "sha256": "7048746a5747807fc87e354ba7f902395a2dbe621cc5f26fc394a630e16d44b2",
+      "license": null,
+      "processed_provo": {
+        "path": "data/provo.csv",
+        "rows": 2659,
+        "bytes": 275651,
+        "sha256": "9bb4c367c8eb95b684065a069e1dd0a21430f5eded0fc20fa6676056cb0e93e4"
+      }
+    },
+    "subtlex_uk": {
+      "source": "https://psychology.nottingham.ac.uk/subtlex-uk/SUBTLEX-UK.txt.zip",
+      "landing_page": "https://psychology.nottingham.ac.uk/subtlex-uk/",
+      "paper": "https://doi.org/10.1080/17470218.2013.850521",
+      "archive_destination": "data/raw/SUBTLEX-UK.txt.zip",
+      "archive_member": "SUBTLEX-UK.txt",
+      "extract_destination": "data/raw/SUBTLEX_UK.txt",
+      "bytes": 3488497,
+      "sha256": "e40d83af55eb85e9e2bc0d72e1022b10e47e31ff2086ad2edcc18292d6bd6616",
+      "extracted_bytes": 18218234,
+      "extracted_sha256": "9cc02e83efce5c606606578122b792e364dcee52799115218f2cfd596e0fe0f3",
+      "rows": 160024,
+      "license": null
+    }
+  }
+}
