@@ -16,12 +16,18 @@ from scipy.stats import spearmanr, wasserstein_distance
 METHOD_COLUMNS = {
     "et1_raw": "et1_raw_word_trt",
     "et1_symmetric": "et1_symmetric_word_trt",
+    "et1_rms_side_scale_symmetric": (
+        "et1_rms_side_scale_symmetric_word_trt"
+    ),
     "et1_asymmetric": "et1_asymmetric_word_trt",
     "ob1": "ob1_tvt",
 }
 DISPLAY_NAMES = {
     "et1_raw": "ET1 raw",
-    "et1_symmetric": "ET1 + symmetric",
+    "et1_symmetric": "ET1 + fixed SymGaussian (sigma=1.0)",
+    "et1_rms_side_scale_symmetric": (
+        "ET1 + RMS-of-side-scales symmetric"
+    ),
     "et1_asymmetric": "ET1 + learned asymmetric",
     "ob1": "OB1 baseline",
 }
@@ -170,6 +176,7 @@ def merge_word_values(
     et1_columns = ["checkpoint_id"] + keys + [
         "et1_raw_word_trt",
         "et1_symmetric_word_trt",
+        "et1_rms_side_scale_symmetric_word_trt",
         "et1_asymmetric_word_trt",
     ]
     ob1_columns = keys + ["ob1_tvt"]
@@ -731,8 +738,11 @@ def paired_contrasts(
     records = []
     comparisons = (
         ("et1_symmetric", "et1_raw"),
+        ("et1_rms_side_scale_symmetric", "et1_raw"),
         ("et1_asymmetric", "et1_raw"),
         ("et1_asymmetric", "et1_symmetric"),
+        ("et1_asymmetric", "et1_rms_side_scale_symmetric"),
+        ("et1_rms_side_scale_symmetric", "et1_symmetric"),
     )
     for method, baseline_method in comparisons:
         candidate = per_passage[per_passage["method"] == method].set_index(
@@ -832,6 +842,8 @@ def attach_checkpoint_metadata(
             "sigma_left",
             "sigma_right",
             "sigma_symmetric",
+            "sigma_symmetric_fixed",
+            "sigma_symmetric_rms_scale",
             "right_left_ratio",
         )
         if column in checkpoint_metadata
@@ -877,6 +889,8 @@ def build_sigma_sweep_summary(
             "sigma_left",
             "sigma_right",
             "sigma_symmetric",
+            "sigma_symmetric_fixed",
+            "sigma_symmetric_rms_scale",
             "right_left_ratio",
         )
         if column in checkpoint_summary
@@ -1030,7 +1044,7 @@ def cognitive_contrast_table(contrasts: pd.DataFrame) -> pd.DataFrame:
 def matched_asymmetry_contrast_table(
     contrasts: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Select the width-matched asymmetric-versus-symmetric contrast."""
+    """Select learned asymmetric versus fixed sigma-one SymGaussian."""
     required = {"candidate", "baseline", "metric"}
     missing = sorted(required - set(contrasts.columns))
     if missing:
@@ -1057,7 +1071,7 @@ def matched_asymmetry_contrast_table(
     result.insert(
         2,
         "contrast_interpretation",
-        "asymmetry_effect_at_matched_rms_width",
+        "learned_asymmetric_vs_fixed_symgaussian_sigma1",
     )
     result.insert(
         3,

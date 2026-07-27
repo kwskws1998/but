@@ -19,6 +19,10 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from models.asym_gaussian_redistributor import AsymGaussianRedistributor
+from cognitive_model_comparsion.src.sigmas import (
+    FIXED_SYMMETRIC_SIGMA,
+    rms_scale_symmetric_sigma,
+)
 
 
 def passage_word_spans(text: str) -> list[dict]:
@@ -100,50 +104,113 @@ def redistribute_values(
     values: torch.Tensor,
     attention_mask: torch.Tensor,
     sigma_record: dict,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Apply learned asymmetric and width-matched symmetric redistribution."""
-    symmetric, asymmetric = redistributors_from_sigma_record(
-        sigma_record,
-        values.device,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Apply fixed, RMS-side-scale, and learned asymmetric redistribution."""
+    fixed_symmetric, rms_symmetric, asymmetric = (
+        redistributors_from_sigma_record(
+            sigma_record,
+            values.device,
+        )
     )
-    return apply_redistributors(values, attention_mask, symmetric, asymmetric)
+    return apply_redistributors(
+        values,
+        attention_mask,
+        fixed_symmetric,
+        rms_symmetric,
+        asymmetric,
+    )
+
+
+def symmetric_redistributor(
+    effective_sigma: float,
+    min_sigma: float,
+    device: torch.device,
+) -> AsymGaussianRedistributor:
+    """Build one symmetric redistributor from an effective sigma value."""
+    raw_sigma = float(effective_sigma) - float(min_sigma)
+    if not math.isfinite(raw_sigma) or raw_sigma <= 0:
+        raise ValueError("Symmetric sigma must exceed min_sigma")
+    log_sigma = math.log(raw_sigma)
+    return redistributor_from_log_sigmas(
+        log_sigma,
+        log_sigma,
+        min_sigma,
+    ).to(device)
 
 
 def redistributors_from_sigma_record(
     sigma_record: dict,
     device: torch.device,
-) -> tuple[AsymGaussianRedistributor, AsymGaussianRedistributor]:
-    """Build one fixed symmetric/asymmetric module pair for a checkpoint."""
+) -> tuple[
+    AsymGaussianRedistributor,
+    AsymGaussianRedistributor,
+    AsymGaussianRedistributor,
+]:
+    """Build fixed, RMS-side-scale, and learned asymmetric redistributors."""
     asymmetric = redistributor_from_log_sigmas(
         sigma_record["log_sigma_left"],
         sigma_record["log_sigma_right"],
         sigma_record["min_sigma"],
     ).to(device)
-    symmetric_raw_sigma = (
-        sigma_record["sigma_symmetric"] - sigma_record["min_sigma"]
+    fixed_sigma = float(
+        sigma_record.get(
+            "sigma_symmetric_fixed",
+            FIXED_SYMMETRIC_SIGMA,
+        )
     )
-    if symmetric_raw_sigma <= 0:
-        raise ValueError("Symmetric sigma must exceed min_sigma")
-    symmetric_log_sigma = math.log(symmetric_raw_sigma)
-    symmetric = redistributor_from_log_sigmas(
-        symmetric_log_sigma,
-        symmetric_log_sigma,
+    learned_sigma_left = float(
+        sigma_record.get(
+            "sigma_left",
+            math.exp(float(sigma_record["log_sigma_left"]))
+            + float(sigma_record["min_sigma"]),
+        )
+    )
+    learned_sigma_right = float(
+        sigma_record.get(
+            "sigma_right",
+            math.exp(float(sigma_record["log_sigma_right"]))
+            + float(sigma_record["min_sigma"]),
+        )
+    )
+    rms_sigma = float(
+        sigma_record.get(
+            "sigma_symmetric_rms_scale",
+            rms_scale_symmetric_sigma(
+                learned_sigma_left,
+                learned_sigma_right,
+            ),
+        )
+    )
+    fixed_symmetric = symmetric_redistributor(
+        fixed_sigma,
         sigma_record["min_sigma"],
-    ).to(device)
-    return symmetric, asymmetric
+        device,
+    )
+    rms_symmetric = symmetric_redistributor(
+        rms_sigma,
+        sigma_record["min_sigma"],
+        device,
+    )
+    return fixed_symmetric, rms_symmetric, asymmetric
 
 
 def apply_redistributors(
     values: torch.Tensor,
     attention_mask: torch.Tensor,
-    symmetric: AsymGaussianRedistributor,
+    fixed_symmetric: AsymGaussianRedistributor,
+    rms_symmetric: AsymGaussianRedistributor,
     asymmetric: AsymGaussianRedistributor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Apply an already constructed fixed redistributor pair."""
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Apply an already constructed fixed/RMS/asymmetric module triple."""
     with torch.inference_mode():
         asymmetric_values = asymmetric(values, attention_mask)
-        symmetric_values = symmetric(values, attention_mask)
-    return symmetric_values, asymmetric_values
+        fixed_symmetric_values = fixed_symmetric(values, attention_mask)
+        rms_symmetric_values = rms_symmetric(values, attention_mask)
+    return (
+        fixed_symmetric_values,
+        rms_symmetric_values,
+        asymmetric_values,
+    )
 
 
 def build_redistribution_attention_mask(
@@ -555,17 +622,26 @@ def run_et1_inference(
                 }
             )
             if sigma_record["checkpoint"] is None:
-                symmetric = asymmetric = None
-                symmetric_word_totals = asymmetric_word_totals = {}
+                fixed_symmetric = rms_symmetric = asymmetric = None
+                fixed_symmetric_word_totals = {}
+                rms_symmetric_word_totals = {}
+                asymmetric_word_totals = {}
             else:
-                symmetric, asymmetric = apply_redistributors(
-                    raw,
-                    redistribution_mask,
-                    *redistributors[checkpoint_id],
+                fixed_symmetric, rms_symmetric, asymmetric = (
+                    apply_redistributors(
+                        raw,
+                        redistribution_mask,
+                        *redistributors[checkpoint_id],
+                    )
                 )
-                symmetric_difference = validate_mass_conservation(
+                fixed_symmetric_difference = validate_mass_conservation(
                     raw,
-                    symmetric,
+                    fixed_symmetric,
+                    redistribution_mask,
+                )
+                rms_symmetric_difference = validate_mass_conservation(
+                    raw,
+                    rms_symmetric,
                     redistribution_mask,
                 )
                 asymmetric_difference = validate_mass_conservation(
@@ -573,8 +649,13 @@ def run_et1_inference(
                     asymmetric,
                     redistribution_mask,
                 )
-                symmetric_word_totals = aggregate_tokens_to_words(
-                    symmetric[0].numpy(),
+                fixed_symmetric_word_totals = aggregate_tokens_to_words(
+                    fixed_symmetric[0].numpy(),
+                    assignments,
+                    word_count,
+                )
+                rms_symmetric_word_totals = aggregate_tokens_to_words(
+                    rms_symmetric[0].numpy(),
                     assignments,
                     word_count,
                 )
@@ -590,7 +671,20 @@ def run_et1_inference(
                             "condition": "et1_symmetric",
                             **redistribution_mass_audit(
                                 raw,
-                                symmetric,
+                                fixed_symmetric,
+                                mask,
+                                redistribution_mask,
+                                predicted["special_tokens_mask"],
+                                assignments,
+                                evaluable_word_ids,
+                            ),
+                        },
+                        {
+                            **mass_context,
+                            "condition": "et1_rms_side_scale_symmetric",
+                            **redistribution_mass_audit(
+                                raw,
+                                rms_symmetric,
                                 mask,
                                 redistribution_mask,
                                 predicted["special_tokens_mask"],
@@ -614,12 +708,23 @@ def run_et1_inference(
                     ]
                 )
                 if not math.isclose(
-                    mass_rows[-2]["valid_token_mass_difference"],
-                    symmetric_difference,
+                    mass_rows[-3]["valid_token_mass_difference"],
+                    fixed_symmetric_difference,
                     rel_tol=0.0,
                     abs_tol=1e-7,
                 ):
-                    raise ValueError("Symmetric mass-audit difference mismatch")
+                    raise ValueError(
+                        "Fixed symmetric mass-audit difference mismatch"
+                    )
+                if not math.isclose(
+                    mass_rows[-2]["valid_token_mass_difference"],
+                    rms_symmetric_difference,
+                    rel_tol=0.0,
+                    abs_tol=1e-7,
+                ):
+                    raise ValueError(
+                        "RMS symmetric mass-audit difference mismatch"
+                    )
                 if not math.isclose(
                     mass_rows[-1]["valid_token_mass_difference"],
                     asymmetric_difference,
@@ -664,8 +769,13 @@ def run_et1_inference(
                         "word_id_zero_based": word_id,
                         "et1_raw_token_trt": raw_value,
                         "et1_symmetric_token_trt": (
-                            float(symmetric[0, token_index])
-                            if symmetric is not None
+                            float(fixed_symmetric[0, token_index])
+                            if fixed_symmetric is not None
+                            else np.nan
+                        ),
+                        "et1_rms_side_scale_symmetric_token_trt": (
+                            float(rms_symmetric[0, token_index])
+                            if rms_symmetric is not None
                             else np.nan
                         ),
                         "et1_asymmetric_token_trt": (
@@ -689,8 +799,13 @@ def run_et1_inference(
                         "word_raw": word.word_raw,
                         "et1_raw_word_trt": raw_word_totals[word_id],
                         "et1_symmetric_word_trt": (
-                            symmetric_word_totals[word_id]
-                            if symmetric is not None
+                            fixed_symmetric_word_totals[word_id]
+                            if fixed_symmetric is not None
+                            else np.nan
+                        ),
+                        "et1_rms_side_scale_symmetric_word_trt": (
+                            rms_symmetric_word_totals[word_id]
+                            if rms_symmetric is not None
                             else np.nan
                         ),
                         "et1_asymmetric_word_trt": (

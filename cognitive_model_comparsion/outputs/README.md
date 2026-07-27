@@ -18,9 +18,9 @@ The full `run` command writes:
   and the passage-level Human-Spearman plot.
 
 Running `evaluate` with the updated code also writes
-`matched_asymmetry_contrasts.csv`. It contains only learned asymmetric versus
-RMS-width-matched symmetric contrasts and flags whether each metric references
-Human TRT or OB1 TVT.
+`matched_asymmetry_contrasts.csv`. This legacy filename contains only learned
+asymmetric versus fixed SymGaussian (`sigma_left=sigma_right=1.0`) contrasts
+and flags whether each metric references Human TRT or OB1 TVT.
 
 Running `compare-attention-profile` over saved ET1 and OB1 outputs writes:
 
@@ -34,6 +34,10 @@ Running `compare-attention-profile` over saved ET1 and OB1 outputs writes:
 - `fixed_ob1_priors.json`;
 - `attention_profile_audit.json`;
 - the copied `checkpoint_sigmas.json` and `.csv`.
+
+The attention-profile tables keep the two symmetric conditions separate:
+`fixed_symmetric_sigma1` uses `(1.0, 1.0)`, whereas
+`rms_side_scale_symmetric` uses the learned side-scale RMS on both sides.
 
 Every kernel-profile table and audit records `candidate_support_policy`.
 `fixation_matched` is primary: candidate and OB1 profiles are normalized on the

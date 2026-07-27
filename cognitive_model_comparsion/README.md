@@ -28,8 +28,8 @@ The directory name intentionally preserves the requested spelling:
 - frozen ET1 inference using the pinned native T5 tokenizer;
 - paper-faithful ET1 word mapping: sum all native T5-token TRT values assigned
   by character offsets to each whitespace word;
-- width-matched symmetric and learned asymmetric redistribution using the
-  production `AsymGaussianRedistributor`;
+- fixed sigma-one symmetric, RMS-of-side-scales symmetric, and learned
+  asymmetric redistribution using the production `AsymGaussianRedistributor`;
 - the production-faithful primary mask, which includes the T5 EOS position
   during redistribution, plus a requested special-token-excluded sensitivity;
 - per-passage mass audits before and after redistribution, including
@@ -41,9 +41,10 @@ The directory name intentionally preserves the requested spelling:
 - fixation-matched candidate normalization on each fixation's exact visible
   relative-token support as the primary kernel-profile estimand, with the
   former global-support calculation retained only as a legacy sensitivity;
-- direct comparison of a no-redistribution impulse, an RMS-width-matched
-  symmetric kernel, a descriptive Gaussian fitted to the same OB1 profile, and
-  the OASST1-learned asymmetric kernel;
+- direct comparison of a no-redistribution impulse, a fixed SymGaussian with
+  `sigma_left=sigma_right=1.0`, an RMS-of-side-scales symmetric diagnostic, a
+  descriptive Gaussian fitted to the same OB1 profile, and the
+  OASST1-learned asymmetric kernel;
 - passage-level Human-referenced and OB1-referenced Spearman,
   Jensen–Shannon divergence, and `word_order_wasserstein`;
 - percentile 95% passage-bootstrap confidence intervals for method means,
@@ -78,14 +79,15 @@ Llama tokens. See the
 
 The analysis has two complementary parts:
 
-1. `matched_asymmetry_contrasts.csv` compares learned asymmetric against the
-   RMS-width-matched symmetric redistribution on the saved Provo word-level
+1. `matched_asymmetry_contrasts.csv` is a legacy filename for the comparison
+   between learned asymmetric redistribution and the independent fixed
+   SymGaussian (`sigma_left=sigma_right=1.0`) on the saved Provo word-level
    Human TRT and OB1 TVT results.
 2. `compare-attention-profile` reconstructs OB1's fixation-onset letter
    attention from the saved 100-simulation fixation table, projects it onto
    native T5 relative-token offsets, and compares four kernels:
-   `raw_delta`, `width_matched_symmetric`, `fixed_ob1_gaussian`, and
-   `learned_asymmetric`.
+   `raw_delta`, `fixed_symmetric_sigma1`, `rms_side_scale_symmetric`,
+   `fixed_ob1_gaussian`, and `learned_asymmetric`.
 
 The second analysis uses native T5 token geometry and character alignment from
 the ET1 output table, but it does not use the ET1-predicted TRT magnitudes.
@@ -323,8 +325,8 @@ CUDA_VISIBLE_DEVICES=0 /venv/cognitive/bin/python \
 The behavior-level sweep produces:
 
 - `sigma_sweep_summary.csv`: one wide row per sigma pair;
-- `checkpoint_matched_asymmetry_contrasts.csv`: per-pair asymmetric versus
-  RMS-width-matched symmetric bootstrap results;
+- `checkpoint_matched_asymmetry_contrasts.csv`: legacy filename for per-pair
+  learned asymmetric versus fixed sigma-one SymGaussian bootstrap results;
 - `checkpoint_cognitive_bootstrap_summary.csv`: per-pair OB1-referenced
   contrasts;
 - `seed_result_table.csv`: per-pair method means and 95% passage-bootstrap
@@ -346,7 +348,7 @@ Print the principal behavior and kernel comparisons:
 ```bash
 python -c "import pandas as pd; p='$SWEEP_RUN/evaluation_unconditional/checkpoint_matched_asymmetry_contrasts.csv'; d=pd.read_csv(p); print(d[d.metric.isin(['human_spearman','ob1_spearman','ob1_word_order_wasserstein'])][['checkpoint_id','source_accuracy','sigma_left','sigma_right','metric','mean_paired_improvement','ci_low','ci_high','permutation_p_two_sided']].to_string(index=False))"
 
-python -c "import pandas as pd; p='$SWEEP_RUN/attention_profile_focused/kernel_alignment_contrasts.csv'; d=pd.read_csv(p); q=d[(d.candidate=='learned_asymmetric') & (d.baseline=='width_matched_symmetric')]; print(q[['checkpoint_id','source_accuracy','learned_sigma_left','learned_sigma_right','ob1_attention_skew','metric','mean_paired_improvement','ci_low','ci_high','permutation_p_two_sided']].to_string(index=False))"
+python -c "import pandas as pd; p='$SWEEP_RUN/attention_profile_focused/kernel_alignment_contrasts.csv'; d=pd.read_csv(p); q=d[(d.candidate=='learned_asymmetric') & d.baseline.isin(['fixed_symmetric_sigma1','rms_side_scale_symmetric'])]; print(q[['checkpoint_id','source_accuracy','learned_sigma_left','learned_sigma_right','ob1_attention_skew','baseline','metric','mean_paired_improvement','ci_low','ci_high','permutation_p_two_sided']].to_string(index=False))"
 
 python -c "import pandas as pd; ck='s11_acc076942_l037380_r321289'; roots=['attention_profile_focused','attention_profile_full_sensitivity','attention_profile_equal_fixation_sensitivity']; [print('\\n'+root+'\\n'+pd.read_csv('$SWEEP_RUN/'+root+'/reviewer_kernel_summary.csv').query('checkpoint_id == @ck').to_string(index=False)) for root in roots]"
 ```

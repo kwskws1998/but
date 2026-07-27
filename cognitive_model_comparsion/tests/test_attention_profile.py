@@ -137,8 +137,8 @@ def test_letter_geometry_uses_real_character_offsets():
     assert geometry.loc[3, "punctuation_only_token"]
 
 
-def test_profile_comparison_writes_four_methods_and_checked_prior(tmp_path):
-    """The comparison emits complete tables and a focused fixed prior."""
+def test_profile_comparison_writes_five_methods_and_checked_prior(tmp_path):
+    """The comparison emits both symmetric controls and a checked prior."""
     passages, tokens, fixations = synthetic_profile_inputs()
     artifacts = compare_attention_profiles(
         passages,
@@ -148,7 +148,6 @@ def test_profile_comparison_writes_four_methods_and_checked_prior(tmp_path):
             "checkpoint_id": "learned",
             "sigma_left": 0.4,
             "sigma_right": 3.4,
-            "sigma_symmetric": np.sqrt((0.4**2 + 3.4**2) / 2),
         },
         attention_skews=(3.0, 4.0),
         bootstrap_samples=100,
@@ -159,11 +158,20 @@ def test_profile_comparison_writes_four_methods_and_checked_prior(tmp_path):
 
     assert set(artifacts["passage_metrics"]["method"]) == {
         "raw_delta",
-        "width_matched_symmetric",
+        "fixed_symmetric_sigma1",
+        "rms_side_scale_symmetric",
         "fixed_ob1_gaussian",
         "learned_asymmetric",
     }
     result_table = artifacts["result_table"]
+    assert set(result_table["fixed_symmetric_sigma"]) == {1.0}
+    rms_scales = result_table[
+        "rms_side_scale_symmetric_sigma"
+    ].drop_duplicates()
+    assert len(rms_scales) == 1
+    assert rms_scales.iloc[0] == pytest.approx(
+        np.sqrt((0.4**2 + 3.4**2) / 2)
+    )
     no_redistribution = result_table.loc[
         result_table["method"].eq("raw_delta")
     ].iloc[0]
@@ -248,7 +256,7 @@ def test_profile_comparison_writes_four_methods_and_checked_prior(tmp_path):
         "learned_sigma_left",
         "learned_sigma_right",
         "learned_right_left_ratio",
-        "width_matched_symmetric_sigma",
+        "fixed_symmetric_sigma",
     ]
     assert directionality.loc[
         directionality["method"].eq("ob1_attention_profile"),
@@ -259,7 +267,8 @@ def test_profile_comparison_writes_four_methods_and_checked_prior(tmp_path):
     )
     assert set(reviewer_summary["method"]) == {
         "raw_delta",
-        "width_matched_symmetric",
+        "fixed_symmetric_sigma1",
+        "rms_side_scale_symmetric",
         "learned_asymmetric",
         "ob1_attention_profile",
     }
@@ -308,7 +317,6 @@ def test_profile_comparison_does_not_use_et1_trt_magnitudes():
         "checkpoint_id": "learned",
         "sigma_left": 0.4,
         "sigma_right": 3.4,
-        "sigma_symmetric": np.sqrt((0.4**2 + 3.4**2) / 2),
     }
     first = compare_attention_profiles(
         passages,
@@ -348,7 +356,6 @@ def test_fixation_matched_support_differs_from_legacy_global_at_boundary():
         "checkpoint_id": "learned",
         "sigma_left": 0.4,
         "sigma_right": 3.4,
-        "sigma_symmetric": np.sqrt((0.4**2 + 3.4**2) / 2),
     }
 
     matched = compare_attention_profiles(
@@ -372,10 +379,10 @@ def test_fixation_matched_support_differs_from_legacy_global_at_boundary():
     )
 
     matched_symmetric = matched["directionality"].query(
-        "method == 'width_matched_symmetric'"
+        "method == 'fixed_symmetric_sigma1'"
     ).iloc[0]
     legacy_symmetric = legacy["directionality"].query(
-        "method == 'width_matched_symmetric'"
+        "method == 'fixed_symmetric_sigma1'"
     ).iloc[0]
     assert matched_symmetric["right_share_of_noncenter_mass"] > (
         legacy_symmetric["right_share_of_noncenter_mass"]
@@ -383,11 +390,11 @@ def test_fixation_matched_support_differs_from_legacy_global_at_boundary():
     matched_metrics = matched["result_table"].set_index("method")
     legacy_metrics = legacy["result_table"].set_index("method")
     assert matched_metrics.loc[
-        "width_matched_symmetric",
+        "fixed_symmetric_sigma1",
         "js_divergence",
     ] != pytest.approx(
         legacy_metrics.loc[
-            "width_matched_symmetric",
+            "fixed_symmetric_sigma1",
             "js_divergence",
         ]
     )
@@ -443,13 +450,13 @@ def test_fixation_matched_support_differs_from_legacy_global_at_boundary():
         right = float(profile[support > 0].sum())
         return right / (left + right)
 
-    symmetric_sigma = sigma_record["sigma_symmetric"]
+    symmetric_sigma = 1.0
     matched_directionality = matched["directionality"].set_index("method")
     legacy_directionality = legacy["directionality"].set_index("method")
     matched_prior = matched["fixed_priors"][0]
     legacy_prior = legacy["fixed_priors"][0]
     matched_sigmas = {
-        "width_matched_symmetric": (
+        "fixed_symmetric_sigma1": (
             symmetric_sigma,
             symmetric_sigma,
         ),
@@ -494,7 +501,6 @@ def test_candidate_support_policy_rejects_unknown_value():
                 "checkpoint_id": "learned",
                 "sigma_left": 0.4,
                 "sigma_right": 3.4,
-                "sigma_symmetric": 2.0,
             },
             candidate_support_policy="unknown",
         )
@@ -511,14 +517,12 @@ def test_profile_comparison_sweeps_multiple_sigmas_on_one_ob1_projection(
             "source_accuracy": 0.77,
             "sigma_left": 0.4,
             "sigma_right": 3.4,
-            "sigma_symmetric": np.sqrt((0.4**2 + 3.4**2) / 2),
         },
         {
             "checkpoint_id": "leftward",
             "source_accuracy": 0.75,
             "sigma_left": 3.5,
             "sigma_right": 0.7,
-            "sigma_symmetric": np.sqrt((3.5**2 + 0.7**2) / 2),
         },
     ]
 
@@ -539,7 +543,7 @@ def test_profile_comparison_sweeps_multiple_sigmas_on_one_ob1_projection(
         "leftward",
     }
     assert len(artifacts["fixed_priors"]) == 1
-    assert len(artifacts["passage_metrics"]) == 16
+    assert len(artifacts["passage_metrics"]) == 20
     assert (
         tmp_path / "kernel_profile_plots/rightward.png"
     ).is_file()

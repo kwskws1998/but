@@ -1,4 +1,4 @@
-"""Extract learned asymmetric Gaussian widths from reward-model checkpoints."""
+"""Extract learned widths and define fixed and RMS symmetric controls."""
 
 from __future__ import annotations
 
@@ -17,6 +17,18 @@ STATE_FILENAMES = (
 )
 LEFT_SUFFIX = "log_sigma_left"
 RIGHT_SUFFIX = "log_sigma_right"
+FIXED_SYMMETRIC_SIGMA = 1.0
+
+
+def rms_scale_symmetric_sigma(
+    sigma_left: float,
+    sigma_right: float,
+) -> float:
+    """Return the RMS of two positive learned side-scale parameters."""
+    values = (float(sigma_left), float(sigma_right))
+    if any(not math.isfinite(value) or value <= 0 for value in values):
+        raise ValueError("Learned sigma values must be finite and positive")
+    return math.sqrt((values[0] ** 2 + values[1] ** 2) / 2.0)
 
 
 def sha256_file(path: Path) -> str:
@@ -132,7 +144,7 @@ def extract_sigma_record(
     min_sigma: float = 1e-6,
     allow_initial_sigmas: bool = False,
 ) -> dict:
-    """Extract log-sigmas, effective sigmas, provenance, and symmetric control."""
+    """Extract learned log-sigmas and attach the independent fixed control."""
     if min_sigma <= 0:
         raise ValueError("min_sigma must be positive")
     state_path = resolve_state_path(checkpoint)
@@ -161,9 +173,6 @@ def extract_sigma_record(
             "Pass allow_initial_sigmas=True only after confirming this is the "
             "intended trained checkpoint."
         )
-    sigma_symmetric = math.sqrt(
-        (sigma_left**2 + sigma_right**2) / 2.0
-    )
     return {
         "checkpoint": str(Path(checkpoint).expanduser().resolve()),
         "state_path": str(state_path),
@@ -179,7 +188,14 @@ def extract_sigma_record(
         "sigma_left": sigma_left,
         "sigma_right": sigma_right,
         "right_left_ratio": sigma_right / sigma_left,
-        "sigma_symmetric": sigma_symmetric,
+        "sigma_symmetric": FIXED_SYMMETRIC_SIGMA,
+        "sigma_symmetric_fixed": FIXED_SYMMETRIC_SIGMA,
+        "sigma_symmetric_rms_scale": rms_scale_symmetric_sigma(
+            sigma_left,
+            sigma_right,
+        ),
+        "symmetric_sigma_source": "fixed_independent_control",
+        "rms_symmetric_sigma_source": "learned_side_scale_rms",
         "initial_like": initial_like,
     }
 
@@ -253,9 +269,14 @@ def direct_sigma_record(
         "sigma_left": effective_left,
         "sigma_right": effective_right,
         "right_left_ratio": effective_right / effective_left,
-        "sigma_symmetric": math.sqrt(
-            (effective_left**2 + effective_right**2) / 2.0
+        "sigma_symmetric": FIXED_SYMMETRIC_SIGMA,
+        "sigma_symmetric_fixed": FIXED_SYMMETRIC_SIGMA,
+        "sigma_symmetric_rms_scale": rms_scale_symmetric_sigma(
+            effective_left,
+            effective_right,
         ),
+        "symmetric_sigma_source": "fixed_independent_control",
+        "rms_symmetric_sigma_source": "learned_side_scale_rms",
         "initial_like": initial_like,
         "sigma_source": "direct_cli",
         "sigma_input_value_type": value_type,

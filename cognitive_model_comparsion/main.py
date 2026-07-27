@@ -76,8 +76,10 @@ from cognitive_model_comparsion.src.prepare_provo import (
     write_canonical_tables,
 )
 from cognitive_model_comparsion.src.sigmas import (
+    FIXED_SYMMETRIC_SIGMA,
     direct_sigma_record,
     extract_sigma_record,
+    rms_scale_symmetric_sigma,
     sha256_file,
 )
 
@@ -445,6 +447,35 @@ def load_sigma_records(path: Path) -> list[dict]:
             float(normalized_record["sigma_right"])
             / float(normalized_record["sigma_left"])
         )
+        previous_symmetric_sigma = normalized_record.get("sigma_symmetric")
+        if (
+            previous_symmetric_sigma is not None
+            and not math.isclose(
+                float(previous_symmetric_sigma),
+                FIXED_SYMMETRIC_SIGMA,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+        ):
+            normalized_record[
+                "legacy_sigma_symmetric"
+            ] = float(previous_symmetric_sigma)
+        normalized_record["sigma_symmetric"] = FIXED_SYMMETRIC_SIGMA
+        normalized_record[
+            "sigma_symmetric_fixed"
+        ] = FIXED_SYMMETRIC_SIGMA
+        normalized_record[
+            "sigma_symmetric_rms_scale"
+        ] = rms_scale_symmetric_sigma(
+            float(normalized_record["sigma_left"]),
+            float(normalized_record["sigma_right"]),
+        )
+        normalized_record[
+            "symmetric_sigma_source"
+        ] = "fixed_independent_control"
+        normalized_record[
+            "rms_symmetric_sigma_source"
+        ] = "learned_side_scale_rms"
         normalized.append(normalized_record)
     identifiers = [
         str(record.get("checkpoint_id", "")) for record in normalized

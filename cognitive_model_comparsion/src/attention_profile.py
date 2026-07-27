@@ -19,11 +19,16 @@ from cognitive_model_comparsion.src.evaluate import (
     bootstrap_mean,
     paired_sign_flip_pvalue,
 )
+from cognitive_model_comparsion.src.sigmas import (
+    FIXED_SYMMETRIC_SIGMA,
+    rms_scale_symmetric_sigma,
+)
 
 
 PROFILE_METHODS = (
     "raw_delta",
-    "width_matched_symmetric",
+    "fixed_symmetric_sigma1",
+    "rms_side_scale_symmetric",
     "fixed_ob1_gaussian",
     "learned_asymmetric",
 )
@@ -32,8 +37,12 @@ PROFILE_DISPLAY_NAMES = {
         "No redistribution "
         "(all allocation weight remains at the source token)"
     ),
-    "width_matched_symmetric": (
-        "RMS-width-matched symmetric redistribution kernel"
+    "fixed_symmetric_sigma1": (
+        "Fixed SymGaussian redistribution "
+        "(sigma_left=sigma_right=1.0)"
+    ),
+    "rms_side_scale_symmetric": (
+        "RMS-of-side-scales symmetric redistribution"
     ),
     "fixed_ob1_gaussian": (
         "Descriptive Gaussian fitted to the same OB1 profile"
@@ -47,9 +56,11 @@ PROFILE_METRIC_DIRECTIONS = {
 }
 PROFILE_COMPARISONS = (
     ("learned_asymmetric", "raw_delta"),
-    ("learned_asymmetric", "width_matched_symmetric"),
+    ("learned_asymmetric", "fixed_symmetric_sigma1"),
+    ("learned_asymmetric", "rms_side_scale_symmetric"),
     ("fixed_ob1_gaussian", "raw_delta"),
-    ("fixed_ob1_gaussian", "width_matched_symmetric"),
+    ("fixed_ob1_gaussian", "fixed_symmetric_sigma1"),
+    ("fixed_ob1_gaussian", "rms_side_scale_symmetric"),
     ("learned_asymmetric", "fixed_ob1_gaussian"),
 )
 OB1_MIN_ATTENTION_WIDTH = 3.0
@@ -917,7 +928,8 @@ def summarize_profile_metrics(
             "learned_sigma_left",
             "learned_sigma_right",
             "learned_right_left_ratio",
-            "width_matched_symmetric_sigma",
+            "fixed_symmetric_sigma",
+            "rms_side_scale_symmetric_sigma",
         ):
             if column in group:
                 values = group[column].drop_duplicates()
@@ -961,7 +973,8 @@ def profile_paired_contrasts(
             "learned_sigma_left",
             "learned_sigma_right",
             "learned_right_left_ratio",
-            "width_matched_symmetric_sigma",
+            "fixed_symmetric_sigma",
+            "rms_side_scale_symmetric_sigma",
         ):
             if column in skew_metrics:
                 values = skew_metrics[column].drop_duplicates()
@@ -1045,7 +1058,6 @@ def compare_attention_profiles(
         "checkpoint_id",
         "sigma_left",
         "sigma_right",
-        "sigma_symmetric",
     }
     normalized_records = []
     for sigma_record in sigma_records:
@@ -1059,14 +1071,21 @@ def compare_attention_profiles(
             "source_accuracy": sigma_record.get("source_accuracy"),
             "learned_sigma_left": float(sigma_record["sigma_left"]),
             "learned_sigma_right": float(sigma_record["sigma_right"]),
-            "width_matched_symmetric_sigma": float(
-                sigma_record["sigma_symmetric"]
+            "fixed_symmetric_sigma": FIXED_SYMMETRIC_SIGMA,
+            "rms_side_scale_symmetric_sigma": (
+                rms_scale_symmetric_sigma(
+                    float(sigma_record["sigma_left"]),
+                    float(sigma_record["sigma_right"]),
+                )
             ),
         }
         if (
             normalized_record["learned_sigma_left"] <= 0
             or normalized_record["learned_sigma_right"] <= 0
-            or normalized_record["width_matched_symmetric_sigma"] <= 0
+            or normalized_record["fixed_symmetric_sigma"] <= 0
+            or normalized_record[
+                "rms_side_scale_symmetric_sigma"
+            ] <= 0
         ):
             raise ValueError("All effective sigma values must be positive")
         normalized_record["learned_right_left_ratio"] = (
@@ -1098,14 +1117,19 @@ def compare_attention_profiles(
     candidate_cache = {}
     for sigma_record in normalized_records:
         checkpoint_id = sigma_record["checkpoint_id"]
-        symmetric_sigma = sigma_record[
-            "width_matched_symmetric_sigma"
+        fixed_symmetric_sigma = sigma_record["fixed_symmetric_sigma"]
+        rms_symmetric_sigma = sigma_record[
+            "rms_side_scale_symmetric_sigma"
         ]
         method_sigmas = {
             "raw_delta": (None, None),
-            "width_matched_symmetric": (
-                symmetric_sigma,
-                symmetric_sigma,
+            "fixed_symmetric_sigma1": (
+                fixed_symmetric_sigma,
+                fixed_symmetric_sigma,
+            ),
+            "rms_side_scale_symmetric": (
+                rms_symmetric_sigma,
+                rms_symmetric_sigma,
             ),
             "learned_asymmetric": (
                 sigma_record["learned_sigma_left"],
@@ -1415,7 +1439,8 @@ def compare_attention_profiles(
             "learned_sigma_left",
             "learned_sigma_right",
             "learned_right_left_ratio",
-            "width_matched_symmetric_sigma",
+            "fixed_symmetric_sigma",
+            "rms_side_scale_symmetric_sigma",
         ],
     ] = np.nan
     reviewer_summary = build_reviewer_profile_summary(
@@ -1441,7 +1466,8 @@ def build_reviewer_profile_summary(
     """Build one explicit reviewer-facing table from profile artifacts."""
     reported_methods = (
         "raw_delta",
-        "width_matched_symmetric",
+        "fixed_symmetric_sigma1",
+        "rms_side_scale_symmetric",
         "learned_asymmetric",
     )
     key_columns = [
@@ -1489,7 +1515,8 @@ def build_reviewer_profile_summary(
                 "learned_sigma_left": np.nan,
                 "learned_sigma_right": np.nan,
                 "learned_right_left_ratio": np.nan,
-                "width_matched_symmetric_sigma": np.nan,
+                "fixed_symmetric_sigma": np.nan,
+                "rms_side_scale_symmetric_sigma": np.nan,
                 "profile_spearman": np.nan,
                 "profile_spearman_ci_low": np.nan,
                 "profile_spearman_ci_high": np.nan,
@@ -1536,9 +1563,10 @@ def build_reviewer_profile_summary(
     )
     method_order = {
         "raw_delta": 0,
-        "width_matched_symmetric": 1,
-        "learned_asymmetric": 2,
-        "ob1_attention_profile": 3,
+        "fixed_symmetric_sigma1": 1,
+        "rms_side_scale_symmetric": 2,
+        "learned_asymmetric": 3,
+        "ob1_attention_profile": 4,
     }
     combined["_method_order"] = combined["method"].map(method_order)
     combined["rightward_share_scope"] = RIGHTWARD_SHARE_SCOPE
@@ -1652,8 +1680,13 @@ def plot_attention_profiles(
         ("ob1_attention_profile", reference_label, 2.5),
         ("raw_delta", PROFILE_DISPLAY_NAMES["raw_delta"], 1.5),
         (
-            "width_matched_symmetric",
-            PROFILE_DISPLAY_NAMES["width_matched_symmetric"],
+            "fixed_symmetric_sigma1",
+            PROFILE_DISPLAY_NAMES["fixed_symmetric_sigma1"],
+            1.5,
+        ),
+        (
+            "rms_side_scale_symmetric",
+            PROFILE_DISPLAY_NAMES["rms_side_scale_symmetric"],
             1.5,
         ),
         (
@@ -1728,8 +1761,11 @@ def summarize_directionality(profiles: pd.DataFrame) -> pd.DataFrame:
                     "learned_right_left_ratio": skew_profiles[
                         "learned_right_left_ratio"
                     ].iloc[0],
-                    "width_matched_symmetric_sigma": skew_profiles[
-                        "width_matched_symmetric_sigma"
+                    "fixed_symmetric_sigma": skew_profiles[
+                        "fixed_symmetric_sigma"
+                    ].iloc[0],
+                    "rms_side_scale_symmetric_sigma": skew_profiles[
+                        "rms_side_scale_symmetric_sigma"
                     ].iloc[0],
                     "left_mass": left,
                     "center_mass": center,

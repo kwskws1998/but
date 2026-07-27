@@ -11,8 +11,8 @@ from cognitive_model_comparsion.src.sigmas import (
 )
 
 
-def test_extract_sigma_record_and_symmetric_control(tmp_path):
-    """A scalar checkpoint pair is converted with the production formula."""
+def test_extract_sigma_record_and_fixed_symmetric_control(tmp_path):
+    """The fixed SymGaussian remains independent of learned checkpoint widths."""
     checkpoint = tmp_path / "adapter_model.bin"
     prefix = (
         "base_model.model.asym_gaussian_redistributor."
@@ -30,9 +30,12 @@ def test_extract_sigma_record_and_symmetric_control(tmp_path):
 
     assert record["sigma_left"] == pytest.approx(1.500001)
     assert record["sigma_right"] == pytest.approx(2.500001)
-    assert record["sigma_symmetric"] == pytest.approx(
+    assert record["sigma_symmetric"] == pytest.approx(1.0)
+    assert record["sigma_symmetric_fixed"] == pytest.approx(1.0)
+    assert record["sigma_symmetric_rms_scale"] == pytest.approx(
         math.sqrt((1.500001**2 + 2.500001**2) / 2)
     )
+    assert record["symmetric_sigma_source"] == "fixed_independent_control"
     assert record["selected_sigma_prefix"] == prefix
 
 
@@ -88,7 +91,10 @@ def test_direct_effective_sigma_record_reconstructs_production_parameters():
     assert record["log_sigma_left"] == pytest.approx(
         math.log(0.41553 - 1e-6)
     )
-    assert record["sigma_symmetric"] == pytest.approx(
+    assert record["sigma_symmetric"] == pytest.approx(1.0)
+    assert record["sigma_symmetric_fixed"] == pytest.approx(1.0)
+    assert record["sigma_symmetric_rms_scale"] == pytest.approx(
         math.sqrt((0.41553**2 + 3.46115**2) / 2)
     )
+    assert record["symmetric_sigma_source"] == "fixed_independent_control"
     assert record["source_accuracy"] == pytest.approx(0.76675)

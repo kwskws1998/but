@@ -35,18 +35,22 @@ def test_token_offsets_map_subtokens_to_whitespace_words():
     ) == {0: 1.0, 1: 5.0}
 
 
-def test_symmetric_and_asymmetric_redistribution_conserve_mass():
-    """Both fixed kernels preserve valid-token total TRT."""
+def test_all_redistribution_conditions_conserve_mass():
+    """Fixed, RMS-side-scale, and asymmetric kernels preserve token mass."""
     values = torch.tensor([[1.0, 2.0, 3.0, 4.0]])
     mask = torch.tensor([[1, 1, 1, 0]])
     record = {
         "log_sigma_left": math.log(1.5),
         "log_sigma_right": math.log(2.5),
         "min_sigma": 1e-6,
-        "sigma_symmetric": math.sqrt((1.500001**2 + 2.500001**2) / 2),
+        "sigma_symmetric": 1.0,
     }
 
-    symmetric, asymmetric = redistribute_values(values, mask, record)
+    symmetric, rms_symmetric, asymmetric = redistribute_values(
+        values,
+        mask,
+        record,
+    )
 
     assert validate_mass_conservation(values, symmetric, mask) == pytest.approx(
         0.0,
@@ -54,10 +58,16 @@ def test_symmetric_and_asymmetric_redistribution_conserve_mass():
     )
     assert validate_mass_conservation(
         values,
+        rms_symmetric,
+        mask,
+    ) == pytest.approx(0.0, abs=1e-5)
+    assert validate_mass_conservation(
+        values,
         asymmetric,
         mask,
     ) == pytest.approx(0.0, abs=1e-5)
     assert not torch.allclose(symmetric, asymmetric)
+    assert not torch.allclose(symmetric, rms_symmetric)
 
 
 def test_non_special_empty_offset_is_rejected():
@@ -98,14 +108,14 @@ def test_eos_leakage_and_word_mass_retention_are_auditable():
         "log_sigma_left": math.log(1.5),
         "log_sigma_right": math.log(2.5),
         "min_sigma": 1e-6,
-        "sigma_symmetric": math.sqrt((1.500001**2 + 2.500001**2) / 2),
+        "sigma_symmetric": 1.0,
     }
 
     production_mask = build_redistribution_attention_mask(
         attention_mask,
         special_tokens_mask,
     )
-    production_symmetric, _ = redistribute_values(
+    production_symmetric, _, _ = redistribute_values(
         values,
         production_mask,
         record,
@@ -124,7 +134,7 @@ def test_eos_leakage_and_word_mass_retention_are_auditable():
         special_tokens_mask,
         include_special_tokens=False,
     )
-    sensitivity_symmetric, _ = redistribute_values(
+    sensitivity_symmetric, _, _ = redistribute_values(
         values,
         sensitivity_mask,
         record,
@@ -377,9 +387,7 @@ def test_run_inference_records_mass_by_checkpoint_passage_and_condition():
             "log_sigma_left": math.log(1.5),
             "log_sigma_right": math.log(2.5),
             "min_sigma": 1e-6,
-            "sigma_symmetric": math.sqrt(
-                (1.500001**2 + 2.500001**2) / 2
-            ),
+            "sigma_symmetric": 1.0,
         }
     ]
 
@@ -402,11 +410,12 @@ def test_run_inference_records_mass_by_checkpoint_passage_and_condition():
     assert set(production_mass["condition"]) == {
         "et1_raw",
         "et1_symmetric",
+        "et1_rms_side_scale_symmetric",
         "et1_asymmetric",
     }
     assert set(production_mass["checkpoint_id"]) == {"checkpoint-1"}
     assert set(production_mass["passage_id_zero_based"]) == {0}
-    assert production_audit["mass_checks"] == 3
+    assert production_audit["mass_checks"] == 4
     assert production_audit["redistribution_special_token_policy"] == (
         "include"
     )

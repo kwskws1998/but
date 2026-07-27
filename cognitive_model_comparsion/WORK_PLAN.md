@@ -10,7 +10,7 @@ plots, manifests, and Python CLI are implemented.
 The current rebuttal route reuses the completed Provo 100-simulation output.
 It adds projection of the fixation-onset focused Gaussian component of OB1
 attention into native T5 relative-token space, four-kernel comparison, an
-asymmetric-versus-symmetric matched result, and an optional frozen
+asymmetric-versus-fixed-SymGaussian result, and an optional frozen
 fixed-OB1-prior RM baseline. The full OneStop run is suspended.
 
 The primary kernel-profile policy is now `fixation_matched`: candidate and OB1
@@ -39,8 +39,8 @@ be described as completed OneStop alignment results.
 
 Does the fixed OASST1-learned asymmetric redistribution show directional
 cognitive consistency with OB1's right-skewed visuospatial attention, relative
-to a width-matched symmetric kernel, while the original OASST1 reward result
-separately establishes downstream utility?
+to an independent fixed SymGaussian with `sigma_left=sigma_right=1.0`, while
+the original OASST1 reward result separately establishes downstream utility?
 
 Neither Provo nor OneStop Human TRT is used to fit ET1, the symmetric control,
 the learned sigmas, or OB1.
@@ -56,7 +56,8 @@ span or improves Human TRT prediction.
 | `human_unconditional` | Human TRT primary | Mean released TRT over all retained readers, including zeros |
 | `human_conditional` | Human TRT sensitivity | Mean released TRT over positive-dwell readers; all-missing words excluded |
 | `et1_raw` | Frozen ET1 | Native T5-token TRT summed into corpus words |
-| `et1_symmetric` | Symmetric control | ET1 followed by the width-matched symmetric kernel |
+| `et1_symmetric` | Fixed SymGaussian control | ET1 followed by `sigma_left=sigma_right=1.0` |
+| `et1_rms_side_scale_symmetric` | RMS side-scale diagnostic | ET1 followed by the learned side-scale RMS on both sides |
 | `et1_asymmetric` | Proposed | ET1 followed by fixed `sigma_left` and `sigma_right` |
 | `ob1` | Cognitive baseline | Published OB1 no-predictability condition |
 
@@ -67,7 +68,8 @@ token:
 | ID | Kernel condition | Construction |
 |---|---|---|
 | `raw_delta` | No redistribution | All allocation weight remains at the source token |
-| `width_matched_symmetric` | Symmetric shape control | RMS-width-matched symmetric Gaussian |
+| `fixed_symmetric_sigma1` | Fixed SymGaussian control | `sigma_left=sigma_right=1.0`, independent of the learned asymmetric values |
+| `rms_side_scale_symmetric` | RMS side-scale diagnostic | A common sigma equal to the RMS of the learned left and right scale parameters |
 | `learned_asymmetric` | Learned shape | Frozen OASST1-learned asymmetric Gaussian |
 | `fixed_ob1_gaussian` | Descriptive fit | Gaussian fitted to the same projected OB1 profile; not held-out evidence |
 
@@ -75,16 +77,15 @@ For the primary `fixation_matched` estimand, every kernel in this table is
 renormalized on each fixation's observed offset support. The `global` support
 policy is run separately and labeled as a legacy sensitivity.
 
-For each asymmetric pair:
-
-\[
-\sigma_{\mathrm{sym}}
-=
-\sqrt{\frac{\sigma_L^2+\sigma_R^2}{2}}.
-\]
-
-This preserves the mean squared half-kernel width and fits nothing to the
+The SymGaussian control is fixed at `sigma_left=sigma_right=1.0` for every
+asymmetric checkpoint and is never derived from the learned asymmetric widths.
+It is not width-matched to a learned asymmetric kernel and is not fitted to the
 evaluation corpus.
+
+The separate RMS side-scale diagnostic uses
+`sqrt((sigma_left^2 + sigma_right^2) / 2)` on both sides. It matches only the
+RMS of the two learned scale parameters, not normalized-kernel variance or
+effective span.
 
 ## 2. Python-only entry point
 

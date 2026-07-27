@@ -474,8 +474,48 @@ def test_compact_sigma_json_expands_to_runtime_records(tmp_path):
 
     assert len(records) == 2
     assert records[0]["checkpoint"] == "direct-sigma:first"
-    assert records[0]["sigma_symmetric"] > 0
+    assert records[0]["sigma_symmetric"] == pytest.approx(1.0)
+    assert records[1]["sigma_symmetric"] == pytest.approx(1.0)
+    assert records[0]["sigma_symmetric_fixed"] == pytest.approx(1.0)
+    assert records[0]["sigma_symmetric_rms_scale"] == pytest.approx(
+        (0.4**2 + 3.4**2) ** 0.5 / 2**0.5
+    )
+    assert records[0]["symmetric_sigma_source"] == (
+        "fixed_independent_control"
+    )
     assert records[0]["right_left_ratio"] == pytest.approx(8.5)
+
+
+def test_legacy_rms_symmetric_sigma_is_not_reused(tmp_path):
+    """Loading an old complete record resets the independent SymGaussian."""
+    path = tmp_path / "legacy_sigmas.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "checkpoint_id": "legacy",
+                    "checkpoint": "direct-sigma:legacy",
+                    "log_sigma_left": -1.0,
+                    "log_sigma_right": 1.0,
+                    "min_sigma": 1e-6,
+                    "sigma_left": 0.4,
+                    "sigma_right": 3.4,
+                    "sigma_symmetric": 2.420744,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    record = load_sigma_records(path)[0]
+
+    assert record["sigma_symmetric"] == pytest.approx(1.0)
+    assert record["legacy_sigma_symmetric"] == pytest.approx(2.420744)
+    assert record["sigma_symmetric_fixed"] == pytest.approx(1.0)
+    assert record["sigma_symmetric_rms_scale"] == pytest.approx(
+        (0.4**2 + 3.4**2) ** 0.5 / 2**0.5
+    )
+    assert record["symmetric_sigma_source"] == "fixed_independent_control"
 
 
 @pytest.mark.parametrize(

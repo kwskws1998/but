@@ -41,6 +41,7 @@ def _passage_word_values(
             "human_trt_conditional": human_conditional,
             "et1_raw_word_trt": increasing,
             "et1_symmetric_word_trt": increasing,
+            "et1_rms_side_scale_symmetric_word_trt": increasing,
             "et1_asymmetric_word_trt": increasing,
             "ob1_tvt": increasing,
         }
@@ -71,6 +72,12 @@ def _complete_merge_inputs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
             "word_id_zero_based": [0, 1, 0, 1],
             "et1_raw_word_trt": [1.0, 2.0, 1.0, 2.0],
             "et1_symmetric_word_trt": [1.0, 2.0, 1.0, 2.0],
+            "et1_rms_side_scale_symmetric_word_trt": [
+                1.0,
+                2.0,
+                1.0,
+                2.0,
+            ],
             "et1_asymmetric_word_trt": [1.0, 2.0, 1.0, 2.0],
         }
     )
@@ -668,12 +675,12 @@ def test_conditional_human_missing_words_are_masked_for_every_array():
         human_column="human_trt_conditional",
     )
 
-    assert len(metrics) == 4
+    assert len(metrics) == 5
     assert set(metrics["original_word_count"]) == {4}
     assert set(metrics["word_count"]) == {3}
     assert set(metrics["human_missing_words_excluded"]) == {1}
-    assert metrics["human_spearman"].tolist() == pytest.approx([1.0] * 4)
-    assert metrics["ob1_spearman"].tolist() == pytest.approx([1.0] * 4)
+    assert metrics["human_spearman"].tolist() == pytest.approx([1.0] * 5)
+    assert metrics["ob1_spearman"].tolist() == pytest.approx([1.0] * 5)
 
 
 def test_ob1_incompatible_words_are_common_masked_before_metrics():
@@ -686,6 +693,7 @@ def test_ob1_incompatible_words_are_common_masked_before_metrics():
     for column in (
         "et1_raw_word_trt",
         "et1_symmetric_word_trt",
+        "et1_rms_side_scale_symmetric_word_trt",
         "et1_asymmetric_word_trt",
         "ob1_tvt",
     ):
@@ -697,7 +705,7 @@ def test_ob1_incompatible_words_are_common_masked_before_metrics():
     assert set(metrics["ob1_compatible_word_count"]) == {3}
     assert set(metrics["ob1_incompatible_words_excluded"]) == {1}
     assert set(metrics["word_count"]) == {3}
-    assert metrics["human_spearman"].tolist() == pytest.approx([1.0] * 4)
+    assert metrics["human_spearman"].tolist() == pytest.approx([1.0] * 5)
 
 
 def test_ob1_clean_passage_sensitivity_filters_complete_passages():
@@ -763,6 +771,12 @@ def test_merge_rejects_balanced_missing_and_duplicate_et1_coordinates():
             "word_id_zero_based": [0, 0, 0, 1],
             "et1_raw_word_trt": [1.0, 1.0, 1.0, 2.0],
             "et1_symmetric_word_trt": [1.0, 1.0, 1.0, 2.0],
+            "et1_rms_side_scale_symmetric_word_trt": [
+                1.0,
+                1.0,
+                1.0,
+                2.0,
+            ],
             "et1_asymmetric_word_trt": [1.0, 1.0, 1.0, 2.0],
         }
     )
@@ -877,6 +891,7 @@ def test_raw_only_checkpoint_skips_fully_unavailable_redistributions():
         human_conditional=[1.0, 2.0, 3.0],
     )
     word_values["et1_symmetric_word_trt"] = np.nan
+    word_values["et1_rms_side_scale_symmetric_word_trt"] = np.nan
     word_values["et1_asymmetric_word_trt"] = np.nan
 
     metrics = evaluate_passages(word_values)
