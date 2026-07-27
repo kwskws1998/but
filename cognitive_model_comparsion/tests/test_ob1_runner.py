@@ -494,8 +494,15 @@ def test_parallel_worker_outputs_restore_global_simulation_order(tmp_path):
         chunks=chunks,
         workers_requested=2,
         python_hash_seed=20260725,
+        n_trials=1,
     )
     merged = pd.read_csv(tmp_path / "ob1_fixations.csv")
+    manifest = __import__("json").loads(
+        (tmp_path / "ob1_worker_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
 
     assert merged["seed"].tolist() == [11, 12, 13]
     assert merged["simulation_id"].tolist() == [0, 1, 2]
+    assert manifest["n_trials"] == 1

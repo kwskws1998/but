@@ -49,6 +49,10 @@ def load_fixed_ob1_prior(path: str | Path, attention_skew: float) -> dict:
         raise ValueError(
             "Fixed RM prior must use relative native T5 token coordinates"
         )
+    if selected.get("candidate_support_policy") != "fixation_matched":
+        raise ValueError(
+            "Fixed RM prior must use fixation-matched candidate support"
+        )
     sigma_left = float(selected["sigma_left"])
     sigma_right = float(selected["sigma_right"])
     if (
@@ -68,6 +72,7 @@ def load_fixed_ob1_prior(path: str | Path, attention_skew: float) -> dict:
         "profile_component": selected["profile_component"],
         "fixation_weighting": selected["fixation_weighting"],
         "projection_coordinate": selected["projection_coordinate"],
+        "candidate_support_policy": selected["candidate_support_policy"],
         "sigma_left": sigma_left,
         "sigma_right": sigma_right,
         "initializer_sigma_left": sigma_left - REDISTRIBUTOR_MIN_SIGMA,

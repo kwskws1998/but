@@ -36,14 +36,22 @@ The directory name intentionally preserves the requested spelling:
   word-assigned, unassigned-special, and final evaluable-grid mass;
 - deterministic, parallel OB1 stochastic simulations and TVT aggregation over
   every fixation, including regressions;
-- reconstruction of the saved OB1 fixation-onset attention profile in native
-  T5 relative-token coordinates;
-- direct comparison of raw delta, width-matched symmetric, fixed OB1-fitted,
-  and OASST1-learned asymmetric kernels;
+- reconstruction of the saved OB1 fixation-onset focused Gaussian component in
+  native T5 relative-token coordinates;
+- fixation-matched candidate normalization on each fixation's exact visible
+  relative-token support as the primary kernel-profile estimand, with the
+  former global-support calculation retained only as a legacy sensitivity;
+- direct comparison of a no-redistribution impulse, an RMS-width-matched
+  symmetric kernel, a descriptive Gaussian fitted to the same OB1 profile, and
+  the OASST1-learned asymmetric kernel;
 - passage-level Human-referenced and OB1-referenced Spearman,
   Jensen–Shannon divergence, and `word_order_wasserstein`;
-- percentile 95% confidence intervals from paired resampling and two-sided
-  paired sign-flip tests;
+- percentile 95% passage-bootstrap confidence intervals for method means,
+  paired passage-bootstrap confidence intervals for within-passage method
+  differences, and two-sided paired sign-flip tests; OB1 simulations are pooled
+  before these passage-level resampling procedures;
+- descriptive rightward-share point estimates from pooled offset profiles,
+  without bootstrap confidence intervals;
 - passage-level resampling for Provo and article-cluster resampling over the 30
   OneStop articles;
 - optional OneStop clean-passage sensitivity restricted to 107 paragraphs
@@ -55,12 +63,10 @@ No `.sh` file or `gdown` is used.
 ## Recommended Provo rebuttal route
 
 The narrow claim is cognitive-model consistency, not improved Human TRT
-prediction. The OB1 paper describes its first key feature word for word as
-“parallel processing of multiple words, modulated by an attentional window of
-adaptable size.” It also defines the asymmetry as “equal to 1 toward the right
-and 0.25 toward the left” and says the effective span is “approximately four
-times greater to the right (14 to 15 letters) than to the left (3 to 4
-letters).” See the
+prediction. The OB1 paper describes “parallel processing of multiple words”
+with an “attentional window of adaptable size.” It defines `Asym` as “equal to
+1 toward the right and 0.25 toward the left” and motivates this with a roughly
+fourfold larger effective span to the right. See the
 [OB1 paper](https://research.vu.nl/ws/portalfiles/portal/72578613/OB1_reader_A_model_of_word_recognition_and_eye_movements_in_text_reading.pdf).
 
 The GazeReward paper states that ET1 “predicts total reading time (TRT) per
@@ -81,14 +87,36 @@ The analysis has two complementary parts:
    `raw_delta`, `width_matched_symmetric`, `fixed_ob1_gaussian`, and
    `learned_asymmetric`.
 
+The second analysis uses native T5 token geometry and character alignment from
+the ET1 output table, but it does not use the ET1-predicted TRT magnitudes.
+`raw_delta` is therefore an internal ID for the no-redistribution impulse
+response, not a behavior-level ET1 prediction result.
+
+The primary candidate-support policy is `fixation_matched`. For every OB1
+fixation, it normalizes each candidate kernel on the exact relative T5-token
+offsets visible to that fixation and then pools candidate and OB1 profiles with
+identical fixation weights. The previous calculation was hybrid: OB1 was
+normalized within each fixation window, whereas each candidate was normalized
+once on the global union of offsets. This could assign candidate mass to
+positions unavailable in a particular fixation. That earlier calculation is
+retained as `global` only for a legacy support sensitivity.
+
+The previously printed s11 Spearman values `0.720` (`skew=3`) and `0.737`
+(`skew=4`) used the legacy `global` policy. They cannot be reported as primary
+after this support correction. The cached 100-simulation post-processing below
+must be rerun with `fixation_matched`; this repository does not claim new
+100-simulation values before that rerun is inspected.
+
 The projection replays the vendored implementation, including its actual
 `n-1 ... n+3` stimulus window, the post-update attention width, fixation
 position, and punctuation-aware T5 character offsets. The primary `focused`
 profile removes OB1's constant residual `+0.25`, because a normalized Gaussian
 redistributor has no constant background component. The `full` run below is
-the required sensitivity. Saved OB1 outputs do not contain cycle-level
-attention shifts, so this is explicitly a fixation-onset attention comparison,
-not a reconstruction of OB1's complete latent trajectory.
+the focused component plus that constant residual, not OB1's complete latent
+attention. Both variants exclude acuity, within-fixation attention shifts,
+lexical activation, saccade control, and final TVT. Saved OB1 outputs do not
+contain cycle-level attention shifts, so this is explicitly a fixation-onset
+attention comparison.
 
 The saved fixation trajectories were generated by the vendored code with
 `attention_skew=3`. The additional `skew=4` condition reweights those same
@@ -110,61 +138,107 @@ python -m pip check
 python -m pytest -q cognitive_model_comparsion/tests
 ```
 
-Set the completed run directory only as a shell convenience. The commands do
-not rerun ET1 or OB1:
+Set the historical completed run only as the reusable OB1 and native-T5
+geometry cache. Its directory name records the earlier `0.41553/3.46115` pair,
+but OB1 trajectories and T5 token geometry do not depend on that pair. The
+commands below pass the selected `0.3738/3.21289` pair directly and do not rerun
+ET1 or OB1. They use the cached ET1 table only for token geometry, not for its
+TRT values.
 
 ```bash
-export PROVO_RUN=/workspace/but/cognitive_model_comparsion/outputs/provo_ob1_sigma076675
-
-python cognitive_model_comparsion/main.py evaluate \
-  --corpus provo \
-  --et1-dir "$PROVO_RUN/et1" \
-  --ob1-dir "$PROVO_RUN/ob1" \
-  --human-target human_trt_unconditional \
-  --bootstrap-samples 10000 \
-  --seed 20260725 \
-  --output-dir "$PROVO_RUN/evaluation_unconditional_rebuttal"
+export PROVO_CACHE=/workspace/but/cognitive_model_comparsion/outputs/provo_ob1_sigma076675
+export SELECTED_PROFILE_RUN=/workspace/but/cognitive_model_comparsion/outputs/provo_selected_s11_profile_reanalysis
 
 python cognitive_model_comparsion/main.py compare-attention-profile \
   --corpus provo \
-  --sigma-json "$PROVO_RUN/checkpoint_sigmas.json" \
-  --et1-dir "$PROVO_RUN/et1" \
-  --ob1-dir "$PROVO_RUN/ob1" \
+  --sigma-left 0.3738 \
+  --sigma-right 3.21289 \
+  --sigma-value-type effective \
+  --sigma-source-accuracy 0.76942 \
+  --checkpoint-id s11_acc076942_l037380_r321289 \
+  --et1-dir "$PROVO_CACHE/et1" \
+  --ob1-dir "$PROVO_CACHE/ob1" \
   --ob1-attention-skew 3 \
   --ob1-attention-skew 4 \
   --fixation-weighting duration \
   --profile-component focused \
+  --candidate-support-policy fixation_matched \
   --bootstrap-samples 10000 \
   --seed 20260725 \
-  --output-dir "$PROVO_RUN/attention_profile_focused"
+  --output-dir "$SELECTED_PROFILE_RUN/attention_profile_focused"
 
 python cognitive_model_comparsion/main.py compare-attention-profile \
   --corpus provo \
-  --sigma-json "$PROVO_RUN/checkpoint_sigmas.json" \
-  --et1-dir "$PROVO_RUN/et1" \
-  --ob1-dir "$PROVO_RUN/ob1" \
+  --sigma-left 0.3738 \
+  --sigma-right 3.21289 \
+  --sigma-value-type effective \
+  --sigma-source-accuracy 0.76942 \
+  --checkpoint-id s11_acc076942_l037380_r321289 \
+  --et1-dir "$PROVO_CACHE/et1" \
+  --ob1-dir "$PROVO_CACHE/ob1" \
   --ob1-attention-skew 3 \
   --ob1-attention-skew 4 \
   --fixation-weighting duration \
   --profile-component full \
+  --candidate-support-policy fixation_matched \
   --bootstrap-samples 10000 \
   --seed 20260725 \
-  --output-dir "$PROVO_RUN/attention_profile_full_sensitivity"
+  --output-dir "$SELECTED_PROFILE_RUN/attention_profile_full_sensitivity"
+
+python cognitive_model_comparsion/main.py compare-attention-profile \
+  --corpus provo \
+  --sigma-left 0.3738 \
+  --sigma-right 3.21289 \
+  --sigma-value-type effective \
+  --sigma-source-accuracy 0.76942 \
+  --checkpoint-id s11_acc076942_l037380_r321289 \
+  --et1-dir "$PROVO_CACHE/et1" \
+  --ob1-dir "$PROVO_CACHE/ob1" \
+  --ob1-attention-skew 3 \
+  --ob1-attention-skew 4 \
+  --fixation-weighting equal \
+  --profile-component focused \
+  --candidate-support-policy fixation_matched \
+  --bootstrap-samples 10000 \
+  --seed 20260725 \
+  --output-dir "$SELECTED_PROFILE_RUN/attention_profile_equal_fixation_sensitivity"
+
+python cognitive_model_comparsion/main.py compare-attention-profile \
+  --corpus provo \
+  --sigma-left 0.3738 \
+  --sigma-right 3.21289 \
+  --sigma-value-type effective \
+  --sigma-source-accuracy 0.76942 \
+  --checkpoint-id s11_acc076942_l037380_r321289 \
+  --et1-dir "$PROVO_CACHE/et1" \
+  --ob1-dir "$PROVO_CACHE/ob1" \
+  --ob1-attention-skew 3 \
+  --ob1-attention-skew 4 \
+  --fixation-weighting duration \
+  --profile-component focused \
+  --candidate-support-policy global \
+  --bootstrap-samples 10000 \
+  --seed 20260725 \
+  --output-dir "$SELECTED_PROFILE_RUN/attention_profile_global_support_sensitivity"
 ```
 
-The first command adds the main matched contrast without changing any model
-output. The next two commands are CPU metric passes over saved CSV files and
-normally finish in minutes rather than hours. Confirm that the reused OB1
-input really contains 100 simulations:
+These are CPU metric passes over saved CSV files and normally finish in minutes
+rather than hours. The behavior-level selected-checkpoint result requires the
+actual s11-redistributed TRT values and must therefore be read from the
+12-checkpoint sweep below, not from `$PROVO_CACHE/et1`. Confirm that the reused
+OB1 input really contains 100 simulations:
 
 ```bash
-python -c "import pandas as pd; p='$PROVO_RUN/ob1/ob1_fixations.csv'; d=pd.read_csv(p, usecols=['simulation_id','seed','text_id']); print('simulations',d.simulation_id.nunique(),'seeds',d.seed.nunique(),'passages',d.text_id.nunique())"
+python -c "import pandas as pd; p='$PROVO_CACHE/ob1/ob1_fixations.csv'; d=pd.read_csv(p, usecols=['simulation_id','seed','text_id']); print('simulations',d.simulation_id.nunique(),'seeds',d.seed.nunique(),'passages',d.text_id.nunique())"
 
-column -s, -t "$PROVO_RUN/evaluation_unconditional_rebuttal/matched_asymmetry_contrasts.csv"
-column -s, -t "$PROVO_RUN/attention_profile_focused/kernel_alignment_result_table.csv"
-column -s, -t "$PROVO_RUN/attention_profile_focused/kernel_alignment_contrasts.csv"
-column -s, -t "$PROVO_RUN/attention_profile_focused/kernel_directionality.csv"
-cat "$PROVO_RUN/attention_profile_focused/fixed_ob1_priors.json"
+column -s, -t "$SELECTED_PROFILE_RUN/attention_profile_focused/kernel_alignment_result_table.csv"
+column -s, -t "$SELECTED_PROFILE_RUN/attention_profile_focused/kernel_alignment_contrasts.csv"
+column -s, -t "$SELECTED_PROFILE_RUN/attention_profile_focused/kernel_directionality.csv"
+column -s, -t "$SELECTED_PROFILE_RUN/attention_profile_focused/reviewer_kernel_summary.csv"
+column -s, -t "$SELECTED_PROFILE_RUN/attention_profile_full_sensitivity/reviewer_kernel_summary.csv"
+column -s, -t "$SELECTED_PROFILE_RUN/attention_profile_equal_fixation_sensitivity/reviewer_kernel_summary.csv"
+column -s, -t "$SELECTED_PROFILE_RUN/attention_profile_global_support_sensitivity/reviewer_kernel_summary.csv"
+cat "$SELECTED_PROFILE_RUN/attention_profile_focused/fixed_ob1_priors.json"
 ```
 
 ### Sweep the 12 learned sigma pairs
@@ -174,7 +248,7 @@ The checked compact configuration is
 provenance from the original reward-model runs; they are not Provo scores and
 are never used to fit or select a redistribution kernel.
 
-Reuse the completed 100-reader OB1 output and run frozen ET1 only once over the
+Reuse the completed 100-simulation OB1 output and run frozen ET1 only once over the
 55 Provo passages:
 
 ```bash
@@ -210,9 +284,40 @@ CUDA_VISIBLE_DEVICES=0 /venv/cognitive/bin/python \
   --ob1-attention-skew 4 \
   --fixation-weighting duration \
   --profile-component focused \
+  --candidate-support-policy fixation_matched \
   --bootstrap-samples 10000 \
   --seed 20260725 \
   --output-dir "$SWEEP_RUN/attention_profile_focused"
+
+/venv/cognitive/bin/python \
+  cognitive_model_comparsion/main.py compare-attention-profile \
+  --corpus provo \
+  --sigma-json "$SWEEP_RUN/et1/checkpoint_sigmas.json" \
+  --et1-dir "$SWEEP_RUN/et1" \
+  --ob1-dir "$PROVO_RUN/ob1" \
+  --ob1-attention-skew 3 \
+  --ob1-attention-skew 4 \
+  --fixation-weighting duration \
+  --profile-component full \
+  --candidate-support-policy fixation_matched \
+  --bootstrap-samples 10000 \
+  --seed 20260725 \
+  --output-dir "$SWEEP_RUN/attention_profile_full_sensitivity"
+
+/venv/cognitive/bin/python \
+  cognitive_model_comparsion/main.py compare-attention-profile \
+  --corpus provo \
+  --sigma-json "$SWEEP_RUN/et1/checkpoint_sigmas.json" \
+  --et1-dir "$SWEEP_RUN/et1" \
+  --ob1-dir "$PROVO_RUN/ob1" \
+  --ob1-attention-skew 3 \
+  --ob1-attention-skew 4 \
+  --fixation-weighting equal \
+  --profile-component focused \
+  --candidate-support-policy fixation_matched \
+  --bootstrap-samples 10000 \
+  --seed 20260725 \
+  --output-dir "$SWEEP_RUN/attention_profile_equal_fixation_sensitivity"
 ```
 
 The behavior-level sweep produces:
@@ -222,12 +327,19 @@ The behavior-level sweep produces:
   RMS-width-matched symmetric bootstrap results;
 - `checkpoint_cognitive_bootstrap_summary.csv`: per-pair OB1-referenced
   contrasts;
-- `seed_result_table.csv`: per-pair method means and confidence intervals.
+- `seed_result_table.csv`: per-pair method means and 95% passage-bootstrap
+  confidence intervals conditional on pooled OB1 simulations and fixed sigma
+  values.
+
+Rightward share is a descriptive point estimate from each pooled offset profile;
+the current pipeline does not attach a bootstrap interval to it.
 
 The kernel-level sweep produces per-pair rows in
 `kernel_alignment_result_table.csv`, `kernel_alignment_contrasts.csv`, and
-`kernel_directionality.csv`. It projects saved OB1 fixations once and writes
-one plot per pair under `kernel_profile_plots/`.
+`kernel_directionality.csv`, plus the explicitly labeled
+`reviewer_kernel_summary.csv`. Each command post-processes saved OB1 fixations
+without rerunning OB1 and writes one plot per pair under
+`kernel_profile_plots/`.
 
 Print the principal behavior and kernel comparisons:
 
@@ -235,19 +347,23 @@ Print the principal behavior and kernel comparisons:
 python -c "import pandas as pd; p='$SWEEP_RUN/evaluation_unconditional/checkpoint_matched_asymmetry_contrasts.csv'; d=pd.read_csv(p); print(d[d.metric.isin(['human_spearman','ob1_spearman','ob1_word_order_wasserstein'])][['checkpoint_id','source_accuracy','sigma_left','sigma_right','metric','mean_paired_improvement','ci_low','ci_high','permutation_p_two_sided']].to_string(index=False))"
 
 python -c "import pandas as pd; p='$SWEEP_RUN/attention_profile_focused/kernel_alignment_contrasts.csv'; d=pd.read_csv(p); q=d[(d.candidate=='learned_asymmetric') & (d.baseline=='width_matched_symmetric')]; print(q[['checkpoint_id','source_accuracy','learned_sigma_left','learned_sigma_right','ob1_attention_skew','metric','mean_paired_improvement','ci_low','ci_high','permutation_p_two_sided']].to_string(index=False))"
+
+python -c "import pandas as pd; ck='s11_acc076942_l037380_r321289'; roots=['attention_profile_focused','attention_profile_full_sensitivity','attention_profile_equal_fixation_sensitivity']; [print('\\n'+root+'\\n'+pd.read_csv('$SWEEP_RUN/'+root+'/reviewer_kernel_summary.csv').query('checkpoint_id == @ck').to_string(index=False)) for root in roots]"
 ```
 
-All 12 rows should be reported as a robustness sweep. Choosing the best Provo
-row after inspecting these results and presenting it as a pre-specified
-held-out result would be post-hoc selection.
+All 12 rows should be reported as a robustness sweep. The selected s11
+behavior-level result must be filtered from `$SWEEP_RUN/evaluation_unconditional`
+by `checkpoint_id`; the historical `provo_ob1_sigma076675/et1` values belong to
+s05.
+Choosing the best Provo row after inspecting these results and presenting it as
+a pre-specified held-out result would be post-hoc selection.
 
-The main reviewer-facing interpretation must report metric agreement and
-disagreement. A defensible sentence is:
-
-> The OASST1-learned asymmetric kernel showed directional correspondence with
-> OB1's right-skewed visuospatial attention and outperformed a width-matched
-> symmetric redistribution on the specified Provo contrasts, while the
-> original reward-model result separately demonstrates downstream utility.
+The main reviewer-facing interpretation must be regenerated from the primary
+`fixation_matched`, focused, duration-weighted, skew-3 output and must report
+metric agreement and disagreement. No numerical direction is asserted here
+before the corrected cached 100-simulation post-processing is complete. The
+legacy `global` output is a support sensitivity and cannot substitute for the
+primary table.
 
 Do not replace “directional correspondence” with “Human perceptual-span
 estimation,” and do not claim universal superiority if one of Spearman, JS, or
@@ -348,8 +464,7 @@ The public first-run sources are the
 [OneStop OSF release](https://osf.io/zn9sq/),
 [pinned OB1 source](https://github.com/dritlopes/language_models_outperform_cloze_predictability_in_a_cognitive_model_of_reading/commit/56b8d6401d1c2c1886a9c6ff9df4a143c6f2c12d),
 [SUBTLEX-UK](https://psychology.nottingham.ac.uk/subtlex-uk/),
-[pinned ET1 checkpoint](https://github.com/huangxt39/SelectiveCacheForLM/blob/eccc93f969745b04ce1e4911d6513d85565cc919/FPmodels/T5-tokenizer-BiLSTM-TRT-12-concat-3),
-and
+[pinned ET1 checkpoint](https://github.com/huangxt39/SelectiveCacheForLM/blob/eccc93f969745b04ce1e4911d6513d85565cc919/FPmodels/T5-tokenizer-BiLSTM-TRT-12-concat-3), and
 [pinned public T5 tokenizer](https://huggingface.co/t5-small/tree/df1b051c49625cf57a3d0d8d3863ed4d13564fe4).
 
 The first setup requires network access. Later runs reuse and verify the local
@@ -410,17 +525,17 @@ Provo; neither sigma is fitted to Human Provo TRT.
 ```bash
 CUDA_VISIBLE_DEVICES=0 python cognitive_model_comparsion/main.py run \
   --corpus provo \
-  --sigma-left 0.41553 \
-  --sigma-right 3.46115 \
+  --sigma-left 0.3738 \
+  --sigma-right 3.21289 \
   --sigma-value-type effective \
-  --sigma-source-accuracy 0.76675 \
-  --checkpoint-id oasst1_et1_trt_only_sigma \
+  --sigma-source-accuracy 0.76942 \
+  --checkpoint-id s11_acc076942_l037380_r321289 \
   --seeds 0:100 \
   --workers 32 \
   --bootstrap-samples 10000 \
   --seed 20260725 \
   --with-special-token-sensitivity \
-  --output-dir cognitive_model_comparsion/outputs/provo_ob1_sigma076675
+  --output-dir cognitive_model_comparsion/outputs/provo_ob1_sigma076942
 ```
 
 The primary `et1` directory reproduces the production redistribution mask,
@@ -446,18 +561,18 @@ published OB1 baseline on the OneStop Advanced paragraphs:
 ```bash
 CUDA_VISIBLE_DEVICES=0 python cognitive_model_comparsion/main.py run \
   --corpus onestop \
-  --sigma-left 0.41553 \
-  --sigma-right 3.46115 \
+  --sigma-left 0.3738 \
+  --sigma-right 3.21289 \
   --sigma-value-type effective \
-  --sigma-source-accuracy 0.76675 \
-  --checkpoint-id oasst1_et1_trt_only_sigma \
+  --sigma-source-accuracy 0.76942 \
+  --checkpoint-id s11_acc076942_l037380_r321289 \
   --seeds 0:100 \
   --workers 32 \
   --bootstrap-samples 10000 \
   --seed 20260725 \
   --with-special-token-sensitivity \
   --with-ob1-clean-passage-sensitivity \
-  --output-dir cognitive_model_comparsion/outputs/onestop_ob1_sigma076675
+  --output-dir cognitive_model_comparsion/outputs/onestop_ob1_sigma076942
 ```
 
 This full OneStop 100-seed run is currently suspended in favor of the
@@ -477,7 +592,7 @@ The full pipeline is complete only when `run_manifest.json` reports
 `"status": "complete"`. Check it without creating another script:
 
 ```bash
-python -c "import json; p='cognitive_model_comparsion/outputs/onestop_ob1_sigma076675/run_manifest.json'; print(json.load(open(p, encoding='utf-8'))['status'])"
+python -c "import json; p='cognitive_model_comparsion/outputs/onestop_ob1_sigma076942/run_manifest.json'; print(json.load(open(p, encoding='utf-8'))['status'])"
 ```
 
 ## OneStop preparation contract
@@ -527,8 +642,8 @@ each passage:
   not a fixation-coordinate or scanpath metric;
 - OB1 Spearman: rank correspondence with OB1 simulated TVT.
 
-The reviewer-minimal cognitive comparison uses OB1 as the reference and
-compares ET1 raw, ET1 + symmetric, and ET1 + learned asymmetric. It does not
+The behavior-level reviewer comparison uses OB1 simulated TVT as the reference
+and compares ET1 raw, ET1 + symmetric, and ET1 + learned asymmetric. It does not
 use the OB1 self-comparison as a substantive result. The cognitive-only
 metrics are:
 
@@ -552,9 +667,9 @@ For the command shown above, inspect them with:
 
 ```bash
 column -s, -t \
-  cognitive_model_comparsion/outputs/onestop_ob1_sigma076675/evaluation_unconditional/cognitive_result_table.csv
+  cognitive_model_comparsion/outputs/onestop_ob1_sigma076942/evaluation_unconditional/cognitive_result_table.csv
 column -s, -t \
-  cognitive_model_comparsion/outputs/onestop_ob1_sigma076675/evaluation_unconditional/cognitive_bootstrap_summary.csv
+  cognitive_model_comparsion/outputs/onestop_ob1_sigma076942/evaluation_unconditional/cognitive_bootstrap_summary.csv
 ```
 
 They contain only the ET1 raw, symmetric, and asymmetric rows or their paired
@@ -614,20 +729,20 @@ Every component accepts `--corpus provo` or `--corpus onestop` where relevant:
 ```bash
 python cognitive_model_comparsion/main.py predict-et1 \
   --corpus onestop \
-  --sigma-left 0.41553 \
-  --sigma-right 3.46115 \
+  --sigma-left 0.3738 \
+  --sigma-right 3.21289 \
   --sigma-value-type effective \
-  --sigma-source-accuracy 0.76675 \
-  --checkpoint-id oasst1_et1_trt_only_sigma \
+  --sigma-source-accuracy 0.76942 \
+  --checkpoint-id s11_acc076942_l037380_r321289 \
   --output-dir cognitive_model_comparsion/outputs/onestop_et1
 
 python cognitive_model_comparsion/main.py predict-et1 \
   --corpus onestop \
-  --sigma-left 0.41553 \
-  --sigma-right 3.46115 \
+  --sigma-left 0.3738 \
+  --sigma-right 3.21289 \
   --sigma-value-type effective \
-  --sigma-source-accuracy 0.76675 \
-  --checkpoint-id oasst1_et1_trt_only_sigma \
+  --sigma-source-accuracy 0.76942 \
+  --checkpoint-id s11_acc076942_l037380_r321289 \
   --exclude-special-tokens-from-redistribution \
   --output-dir cognitive_model_comparsion/outputs/onestop_et1_special_excluded
 
@@ -654,8 +769,12 @@ diagnostic path. A full `run` requires a checkpoint or direct sigma pair.
 
 ## Interpretation limits
 
-The comparison tests whether the OASST1-trained redistribution changes frozen
-ET1 word allocation toward Human TRT and OB1 TVT on unseen text. It does not:
+The behavior-level comparison tests whether the OASST1-trained redistribution
+changes frozen ET1 word allocation toward Human TRT and OB1 TVT on unseen
+text. The separate kernel-profile comparison tests only the relative-token
+allocation shape of a unit source-token impulse against the reconstructed OB1
+fixation-onset attention component; it does not use actual ET1 TRT magnitudes.
+Neither analysis:
 
 - refit ET1, sigma, or OB1 on either Human corpus;
 - treat OB1 virtual-reader count as Human sample size;

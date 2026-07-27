@@ -25,12 +25,16 @@ The supplied GazeReward PDF labels the relevant Appendix table:
 Source: `2410.01532v3.pdf`, Table 8, and
 [arXiv 2410.01532](https://arxiv.org/pdf/2410.01532).
 
-The retained values `sigma_left=0.41553` and `sigma_right=3.46115` came from
-the ET1 + GazeConcat, TRT-only condition. Consequently the primary
-redistribution is applied on the native ET1/T5 token sequence, with the same
-production attention-mask semantics used during OASST1 training. Only after
-redistribution are non-special T5 tokens associated to corpus words by exact
-character offsets and summed:
+Among the 12 supplied runs, the checkpoint with the highest reported original
+reward-model accuracy (`0.76942`) has `sigma_left=0.3738` and
+`sigma_right=3.21289`. These values came from the ET1 + GazeConcat, TRT-only
+condition and were selected without using Provo or OB1 results. An earlier
+`0.41553/3.46115` pair remains in the historical completed OB1 cache directory
+and integration-smoke commands but is not the selected rebuttal checkpoint.
+Consequently the primary redistribution is applied on the native ET1/T5 token
+sequence, with the same production attention-mask semantics used during OASST1
+training. Only after redistribution are non-special T5 tokens associated to
+corpus words by exact character offsets and summed:
 
 \[
 E_i=\sum_{t\in word(i)}TRT_t^{ET1}.
@@ -101,25 +105,56 @@ viewing-distance parameter. The defensible description is therefore:
 
 > OB1 explicitly models an adaptive and asymmetric visuospatial attentional span in letter-based coordinates.
 
-### Exact OB1–Provo experiment
+### Attention-profile analysis contract
 
-The 2024 OB1–Provo paper states:
+The OB1 paper defines the directional parameter word for word:
 
-> “We use the full cloze completion and reading time data from the Provo corpus [29]. This corpus consists of data from 55 passages (2689 words in total) with an average of 50 words (range: 39–62) and 2.5 sentences (range: 1–5) per passage.”
+> “Asym is equal to 1 toward the right and 0.25 toward the left”
 
 It also states:
 
-> “We ran 100 simulations per condition in a ‘3x3 + 1’ design: three predictability estimators (cloze, GPT-2 and LLaMA), three predictability weights (low = 0.05, medium = 0.1, and high = 0.2) and a baseline (no predictability).”
+> “Outside the Gaussian, the attentional weight is set to constant”
 
-And defines TRT as:
+Source: Snell et al. (2018), p. 973, in the
+[OB1 paper](https://research.vu.nl/ws/portalfiles/portal/72578613/OB1_reader_A_model_of_word_recognition_and_eye_movements_in_text_reading.pdf).
 
-> “total reading time, i.e. the sum of fixation durations on the word”
+The vendored implementation adds the constant `0.25` to the asymmetric Gaussian
+in `src/reading_helper_functions.py`. The attention-profile analysis therefore
+defines:
+
+- `focused`: the fixation-onset asymmetric Gaussian component without the
+  constant residual;
+- `full`: the same focused component plus the constant `0.25`.
+
+Neither variant reconstructs acuity, within-fixation attention shifts, lexical
+activation, saccade control, or final TVT. The saved trajectory manifest records
+`attention_skew=3`; `skew=4` re-evaluates the attention equation at the saved
+fixation locations and does not rerun OB1. Letter-coordinate attention is
+evaluated at T5 token centers and expressed as relative native T5 token offsets.
+
+The `raw_delta` machine ID in this analysis is a no-redistribution unit impulse:
+all allocation weight remains at the source token. It is not behavior-level
+`ET1 raw`, and actual ET1-predicted TRT magnitudes are not used. The ET1 output
+table supplies only native T5 token geometry and character alignment.
+
+The primary candidate-support policy is `fixation_matched`. It evaluates and
+normalizes each candidate on the exact relative-token offsets visible at each
+saved fixation, matching the support used for the OB1 component, and then pools
+both with identical fixation weights. The earlier implementation was hybrid:
+OB1 was normalized within each fixation window, but candidates were normalized
+once on the global union of observed offsets. The `global` policy preserves
+that calculation only as a labeled legacy sensitivity.
+
+### Exact OB1–Provo experiment
+
+The 2024 OB1–Provo paper reports “55 passages (2689 words in total),” states
+“We ran 100 simulations per condition,” and defines TRT as “the sum of fixation
+durations on the word.”
 
 Source: [Lopes Rego et al. (2024), PLOS Computational Biology](https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1012117).
 
-The same paper's data-availability statement says:
-
-> “All the relevant data and source code used to produce the results and analyses presented in this manuscript are available on a Github repository at https://github.com/dritlopes/OB1-reader-model.”
+The same paper's data-availability statement points to the authors' GitHub
+repository for the relevant data and source code.
 
 The repository URL now redirects to the snapshot recorded below. Contrary to
 the literal data-availability wording, the downloaded snapshot contains only
@@ -343,10 +378,27 @@ The local reproducibility gates produced the following observations:
 | Symmetric/asymmetric mass checks in integration smoke | 110 / 110 passed |
 
 The 110 redistribution checks used synthetic widths solely to validate the
-execution path; they are not a result condition. Actual learned
-redistribution requires the reported OASST1 checkpoint state files. The
-55-passage OB1 run used one virtual reader and is a pre-run gate, not the
-paper's 100-reader condition.
+execution path; they are not a result condition. Actual learned redistribution
+requires either verified effective sigma values or the corresponding OASST1
+checkpoint state files. The 55-passage OB1 run used one virtual reader and is a
+pre-run gate, not the paper's 100-simulation condition.
+
+The rebuttal-grade cached post-processing must additionally record the SHA-256
+hash of `ob1_fixations.csv`, its simulation/seed/passage counts, the trajectory
+manifest hash and condition, the selected profile component, and whether the
+requested attention-function skew matches or reweights the saved trajectory.
+It must also record `candidate_support_policy`; only `fixation_matched` is
+primary, while `global` is a legacy support sensitivity. The updated
+`compare-attention-profile` audit writes these fields; they must be read from
+the completed 100-simulation server output rather than inferred from the local
+one-reader gate.
+
+The previously printed selected-s11 Spearman values `0.720` for `skew=3` and
+`0.737` for `skew=4` were generated by the legacy global-support calculation.
+They cannot be cited as primary after the support correction. The completed
+100-simulation cache must be post-processed again with
+`--candidate-support-policy fixation_matched`; no corrected 100-simulation
+values are asserted in this provenance record before that rerun is inspected.
 
 The OneStop official archive, strict 162-paragraph canonical build, exact
 variant audit, and OB1 compatibility audit have been executed. The complete

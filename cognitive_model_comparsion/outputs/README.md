@@ -29,13 +29,37 @@ Running `compare-attention-profile` over saved ET1 and OB1 outputs writes:
 - `kernel_alignment_by_passage.csv`;
 - `kernel_alignment_result_table.csv`;
 - `kernel_alignment_contrasts.csv`;
+- `reviewer_kernel_summary.csv`, with explicit candidate/reference labels and
+  rightward-share values;
 - `fixed_ob1_priors.json`;
 - `attention_profile_audit.json`;
 - the copied `checkpoint_sigmas.json` and `.csv`.
 
-The fixed-prior JSON generated from `--profile-component focused` may be
-passed to root `main.py --fixed_ob1_prior_json`. The `full` residual-attention
-sensitivity is deliberately rejected as an RM prior.
+Every kernel-profile table and audit records `candidate_support_policy`.
+`fixation_matched` is primary: candidate and OB1 profiles are normalized on the
+same exact visible offsets at each fixation and pooled with the same weights.
+`global` is a legacy sensitivity that normalizes candidates once on the global
+offset union while OB1 remains fixation-window-conditioned. Outputs from these
+policies must be kept in separate directories.
+
+For attention-profile outputs, method-mean intervals resample passages and
+contrast intervals resample paired passage differences. OB1 simulation IDs are
+pooled before resampling, so these intervals do not quantify simulation-level
+Monte Carlo uncertainty. The output tables and audit also state that this
+kernel-shape analysis uses T5 token geometry but not actual ET1-predicted TRT
+magnitudes.
+
+The fixed-prior JSON generated from `--profile-component focused
+--candidate-support-policy fixation_matched` may be passed to root
+`main.py --fixed_ob1_prior_json`. The `full` residual-attention and legacy
+`global` support sensitivities are deliberately rejected as RM priors.
+
+Previously generated selected-s11 values `0.720` (`skew=3`) and `0.737`
+(`skew=4`) used the legacy `global` support policy. They are not primary
+results. Regenerate the focused, full-profile, and equal-fixation outputs from
+the cached 100-simulation fixation table with
+`--candidate-support-policy fixation_matched`; no corrected values are recorded
+here until those files are inspected.
 
 `result_table.csv` reports `human_spearman`, `js_divergence`,
 `word_order_wasserstein`, `ob1_spearman`, `ob1_js_divergence`, and

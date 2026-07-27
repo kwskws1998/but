@@ -352,6 +352,7 @@ def run_ob1_subprocess(
         completed_chunks,
         workers_requested=workers,
         python_hash_seed=python_hash_seed,
+        n_trials=n_trials,
         stimulus_name=stimulus_name,
     )
 
@@ -422,6 +423,7 @@ def merge_ob1_worker_outputs(
     chunks: list[tuple[list[int], Path]],
     workers_requested: int,
     python_hash_seed: int,
+    n_trials: int | None = None,
     stimulus_name: str = "Provo_Corpus",
 ) -> None:
     """Merge worker CSVs and manifests into the serial output contract."""
@@ -491,6 +493,14 @@ def merge_ob1_worker_outputs(
         raise ValueError(
             f"Merged OB1 seed order mismatch: {observed_all_seeds} versus {seeds}"
         )
+    observed_trial_count = int(fixations["text_id"].nunique())
+    merged_trial_count = (
+        observed_trial_count if n_trials is None else int(n_trials)
+    )
+    if merged_trial_count != observed_trial_count:
+        raise ValueError(
+            "Requested OB1 n_trials disagrees with merged fixation passages"
+        )
     fixations.to_csv(output_dir / "ob1_fixations.csv", index=False)
     runtimes = sorted(runtimes, key=lambda item: item["simulation_id"])
     with (output_dir / "ob1_worker_manifest.json").open(
@@ -505,6 +515,7 @@ def merge_ob1_worker_outputs(
                 "parameters": parameters,
                 "runtimes": runtimes,
                 "fixation_rows": len(fixations),
+                "n_trials": merged_trial_count,
                 "parallel": True,
                 "workers_requested": workers_requested,
                 "worker_chunks": chunk_records,

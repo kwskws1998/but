@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib.metadata
 import json
+import math
 import os
 import platform
 import subprocess
@@ -1034,8 +1035,205 @@ def command_evaluate(args: argparse.Namespace) -> None:
     print(json.dumps(audit, indent=2, sort_keys=True))
 
 
+def manifest_integer(value: object, label: str) -> int:
+    """Parse one finite integer-valued manifest or table field."""
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{label} must be an integer") from error
+    if not math.isfinite(numeric) or not numeric.is_integer():
+        raise ValueError(f"{label} must be an integer")
+    return int(numeric)
+
+
+def validate_ob1_manifest_against_fixations(
+    manifest: object,
+    fixations: pd.DataFrame,
+    passages: pd.DataFrame,
+) -> dict:
+    """Validate one OB1 worker manifest against its trajectory table."""
+    if not isinstance(manifest, dict):
+        raise ValueError("OB1 worker manifest must be a JSON object")
+    required_manifest_keys = {
+        "condition",
+        "fixation_rows",
+        "parameters",
+        "runtimes",
+        "seeds",
+    }
+    missing_manifest = sorted(required_manifest_keys - set(manifest))
+    if missing_manifest:
+        raise ValueError(
+            f"OB1 worker manifest is missing keys: {missing_manifest}"
+        )
+    required_fixation_columns = {
+        "seed",
+        "simulation_id",
+        "text_id",
+    }
+    missing_fixations = sorted(
+        required_fixation_columns - set(fixations.columns)
+    )
+    if missing_fixations:
+        raise ValueError(
+            f"OB1 fixation table is missing columns: {missing_fixations}"
+        )
+    if "passage_id_zero_based" not in passages:
+        raise ValueError(
+            "Canonical passage table is missing passage_id_zero_based"
+        )
+
+    expected_rows = manifest_integer(
+        manifest["fixation_rows"],
+        "OB1 manifest fixation_rows",
+    )
+    if expected_rows != len(fixations):
+        raise ValueError(
+            "OB1 manifest fixation_rows disagrees with ob1_fixations.csv"
+        )
+
+    manifest_seeds_raw = manifest["seeds"]
+    if not isinstance(manifest_seeds_raw, list) or not manifest_seeds_raw:
+        raise ValueError("OB1 manifest seeds must be a nonempty list")
+    manifest_seeds = [
+        manifest_integer(value, "OB1 manifest seed")
+        for value in manifest_seeds_raw
+    ]
+    if len(manifest_seeds) != len(set(manifest_seeds)):
+        raise ValueError("OB1 manifest seeds must be unique")
+    fixation_seeds = {
+        manifest_integer(value, "OB1 fixation seed")
+        for value in fixations["seed"].drop_duplicates()
+    }
+    if set(manifest_seeds) != fixation_seeds:
+        raise ValueError(
+            "OB1 manifest seed set disagrees with ob1_fixations.csv"
+        )
+
+    runtimes = manifest["runtimes"]
+    if not isinstance(runtimes, list) or not runtimes:
+        raise ValueError("OB1 manifest runtimes must be a nonempty list")
+    manifest_pairs = []
+    for index, runtime in enumerate(runtimes):
+        if not isinstance(runtime, dict):
+            raise ValueError(
+                f"OB1 manifest runtime {index} must be an object"
+            )
+        missing_runtime = sorted(
+            {"seed", "simulation_id"} - set(runtime)
+        )
+        if missing_runtime:
+            raise ValueError(
+                f"OB1 manifest runtime {index} is missing keys: "
+                f"{missing_runtime}"
+            )
+        manifest_pairs.append(
+            (
+                manifest_integer(
+                    runtime["simulation_id"],
+                    "OB1 manifest runtime simulation_id",
+                ),
+                manifest_integer(
+                    runtime["seed"],
+                    "OB1 manifest runtime seed",
+                ),
+            )
+        )
+    if len(manifest_pairs) != len(set(manifest_pairs)):
+        raise ValueError(
+            "OB1 manifest runtime simulation-seed pairs must be unique"
+        )
+    if len({pair[0] for pair in manifest_pairs}) != len(manifest_pairs):
+        raise ValueError(
+            "Every OB1 manifest simulation_id must map to one seed"
+        )
+    if {pair[1] for pair in manifest_pairs} != set(manifest_seeds):
+        raise ValueError(
+            "OB1 manifest runtime seeds disagree with manifest seeds"
+        )
+
+    fixation_pairs = {
+        (
+            manifest_integer(row.simulation_id, "OB1 fixation simulation_id"),
+            manifest_integer(row.seed, "OB1 fixation seed"),
+        )
+        for row in fixations[
+            ["simulation_id", "seed"]
+        ].drop_duplicates().itertuples(index=False)
+    }
+    if len({pair[0] for pair in fixation_pairs}) != len(fixation_pairs):
+        raise ValueError(
+            "Every OB1 fixation simulation_id must map to one seed"
+        )
+    if set(manifest_pairs) != fixation_pairs:
+        raise ValueError(
+            "OB1 manifest runtime simulation-seed pairs disagree with "
+            "ob1_fixations.csv"
+        )
+
+    canonical_passages = {
+        manifest_integer(value, "canonical passage ID")
+        for value in passages["passage_id_zero_based"].drop_duplicates()
+    }
+    fixation_passages = {
+        manifest_integer(value, "OB1 fixation text_id")
+        for value in fixations["text_id"].drop_duplicates()
+    }
+    if fixation_passages != canonical_passages:
+        raise ValueError(
+            "OB1 fixation passage IDs disagree with the canonical passages"
+        )
+    legacy_trial_count = "n_trials" not in manifest
+    if legacy_trial_count and manifest.get("parallel") is not True:
+        raise ValueError(
+            "OB1 manifest is missing n_trials and is not a recognized "
+            "legacy parallel manifest"
+        )
+    if legacy_trial_count:
+        n_trials = len(canonical_passages)
+        trial_count_source = (
+            "legacy parallel manifest missing n_trials; derived from exact "
+            "canonical and fixation passage-ID agreement"
+        )
+    else:
+        n_trials = manifest_integer(
+            manifest["n_trials"],
+            "OB1 manifest n_trials",
+        )
+        if n_trials != len(canonical_passages):
+            raise ValueError(
+                "OB1 manifest n_trials disagrees with the canonical "
+                "passage count"
+            )
+        if n_trials != len(fixation_passages):
+            raise ValueError(
+                "OB1 manifest n_trials disagrees with ob1_fixations.csv"
+            )
+        trial_count_source = (
+            "manifest n_trials plus exact canonical and fixation "
+            "passage-ID agreement"
+        )
+
+    parameters = manifest["parameters"]
+    if not isinstance(parameters, dict) or "attention_skew" not in parameters:
+        raise ValueError(
+            "OB1 manifest parameters must include attention_skew"
+        )
+    attention_skew = float(parameters["attention_skew"])
+    if not math.isfinite(attention_skew) or attention_skew < 1:
+        raise ValueError(
+            "OB1 manifest attention_skew must be finite and at least one"
+        )
+    return {
+        "trajectory_attention_skew": attention_skew,
+        "validated_trial_count": int(n_trials),
+        "trial_count_validation_source": trial_count_source,
+        "legacy_parallel_manifest_missing_n_trials": legacy_trial_count,
+    }
+
+
 def command_compare_attention_profile(args: argparse.Namespace) -> None:
-    """Compare four token kernels with projected OB1 internal attention."""
+    """Compare allocation kernels with projected OB1 fixation-onset attention."""
     validate_predict_sigma_arguments(args)
     records = (
         load_sigma_records(args.sigma_json)
@@ -1060,6 +1258,29 @@ def command_compare_attention_profile(args: argparse.Namespace) -> None:
         raise FileNotFoundError(f"Missing ET1 token table: {token_path}")
     if not fixation_path.is_file():
         raise FileNotFoundError(f"Missing OB1 fixation table: {fixation_path}")
+    fixations = pd.read_csv(fixation_path)
+    ob1_manifest_path = args.ob1_dir / "ob1_worker_manifest.json"
+    ob1_manifest = None
+    ob1_manifest_validation = None
+    trajectory_attention_skew = None
+    if ob1_manifest_path.is_file():
+        ob1_manifest = json.loads(
+            ob1_manifest_path.read_text(encoding="utf-8")
+        )
+        ob1_manifest_validation = validate_ob1_manifest_against_fixations(
+            ob1_manifest,
+            fixations,
+            passages,
+        )
+        trajectory_attention_skew = ob1_manifest_validation[
+            "trajectory_attention_skew"
+        ]
+    elif not args.allow_missing_ob1_manifest:
+        raise FileNotFoundError(
+            "Missing OB1 worker manifest: "
+            f"{ob1_manifest_path}. Pass --allow-missing-ob1-manifest only "
+            "for explicitly unverified legacy trajectories."
+        )
     attention_skews = tuple(
         args.ob1_attention_skew
         if args.ob1_attention_skew
@@ -1068,13 +1289,15 @@ def command_compare_attention_profile(args: argparse.Namespace) -> None:
     artifacts = compare_attention_profiles(
         passages,
         pd.read_csv(token_path),
-        pd.read_csv(fixation_path),
+        fixations,
         records,
         attention_skews=attention_skews,
         fixation_weighting=args.fixation_weighting,
         profile_component=args.profile_component,
         bootstrap_samples=args.bootstrap_samples,
         seed=args.seed,
+        trajectory_attention_skew=trajectory_attention_skew,
+        candidate_support_policy=args.candidate_support_policy,
     )
     artifacts["audit"].update(
         {
@@ -1082,6 +1305,22 @@ def command_compare_attention_profile(args: argparse.Namespace) -> None:
             "et1_token_values_sha256": sha256_file(token_path),
             "ob1_fixations_path": str(fixation_path.resolve()),
             "ob1_fixations_sha256": sha256_file(fixation_path),
+            "ob1_worker_manifest_path": (
+                str(ob1_manifest_path.resolve())
+                if ob1_manifest is not None
+                else None
+            ),
+            "ob1_worker_manifest_sha256": (
+                sha256_file(ob1_manifest_path)
+                if ob1_manifest is not None
+                else None
+            ),
+            "ob1_condition": (
+                ob1_manifest.get("condition")
+                if ob1_manifest is not None
+                else None
+            ),
+            "ob1_manifest_validation": ob1_manifest_validation,
             "sigma_json_path": (
                 str(args.sigma_json.resolve())
                 if args.sigma_json is not None
@@ -1390,19 +1629,55 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evaluate.set_defaults(handler=command_evaluate)
 
-    attention = subparsers.add_parser("compare-attention-profile")
+    attention = subparsers.add_parser(
+        "compare-attention-profile",
+        description=(
+            "Compare redistribution kernels, not ET1-predicted TRT values, "
+            "with the fixation-onset component of OB1 attention."
+        ),
+    )
     add_corpus_argument(attention)
     add_common_processed_argument(attention)
     add_sigma_arguments(attention, required=False)
     add_direct_sigma_arguments(attention)
     attention.add_argument("--sigma-json", type=Path)
-    attention.add_argument("--et1-dir", type=Path, required=True)
-    attention.add_argument("--ob1-dir", type=Path, required=True)
+    attention.add_argument(
+        "--et1-dir",
+        type=Path,
+        required=True,
+        help=(
+            "Directory containing et1_token_values.csv; this subcommand "
+            "uses its native T5 token geometry, not its predicted TRT "
+            "magnitudes."
+        ),
+    )
+    attention.add_argument(
+        "--ob1-dir",
+        type=Path,
+        required=True,
+        help=(
+            "Directory containing saved OB1 fixation trajectories used to "
+            "reconstruct fixation-onset attention."
+        ),
+    )
+    attention.add_argument(
+        "--allow-missing-ob1-manifest",
+        action="store_true",
+        help=(
+            "Allow an explicitly unverified legacy OB1 fixation table only "
+            "when ob1_worker_manifest.json is absent; a present but "
+            "inconsistent manifest is always rejected."
+        ),
+    )
     attention.add_argument("--output-dir", type=Path, required=True)
     attention.add_argument(
         "--ob1-attention-skew",
         action="append",
         type=float,
+        help=(
+            "Attention-function skew used to re-evaluate saved fixation "
+            "geometries; this does not rerun OB1 trajectories."
+        ),
     )
     attention.add_argument(
         "--fixation-weighting",
@@ -1415,9 +1690,23 @@ def build_parser() -> argparse.ArgumentParser:
         default="focused",
     )
     attention.add_argument(
+        "--candidate-support-policy",
+        choices=("fixation_matched", "global"),
+        default="fixation_matched",
+        help=(
+            "Candidate-kernel normalization support. fixation_matched "
+            "(primary) normalizes on every fixation's exact visible offsets; "
+            "global retains the legacy global-support sensitivity."
+        ),
+    )
+    attention.add_argument(
         "--bootstrap-samples",
         type=int,
         default=10000,
+        help=(
+            "Number of percentile-bootstrap resamples over passage-level "
+            "metrics; OB1 simulation IDs are pooled before resampling."
+        ),
     )
     attention.add_argument("--seed", type=int, default=20260725)
     attention.set_defaults(handler=command_compare_attention_profile)

@@ -10,7 +10,11 @@ from models.asym_gaussian_redistributor import AsymGaussianRedistributor
 from utils.fixed_ob1_prior import load_fixed_ob1_prior
 
 
-def write_priors(path, component="focused"):
+def write_priors(
+    path,
+    component="focused",
+    candidate_support_policy="fixation_matched",
+):
     """Write two skew-specific fixed-prior records."""
     path.write_text(
         json.dumps(
@@ -22,6 +26,7 @@ def write_priors(path, component="focused"):
                     "projection_coordinate": (
                         "relative_native_t5_token_index"
                     ),
+                    "candidate_support_policy": candidate_support_policy,
                     "sigma_left": 0.4,
                     "sigma_right": 1.2,
                     "fit_js_divergence": 0.01,
@@ -33,6 +38,7 @@ def write_priors(path, component="focused"):
                     "projection_coordinate": (
                         "relative_native_t5_token_index"
                     ),
+                    "candidate_support_policy": candidate_support_policy,
                     "sigma_left": 0.3,
                     "sigma_right": 1.3,
                     "fit_js_divergence": 0.02,
@@ -57,6 +63,7 @@ def test_loader_selects_exact_skew_and_records_hash(tmp_path):
     assert prior["right_left_ratio"] == pytest.approx(3.0)
     assert len(prior["sha256"]) == 64
     assert prior["profile_component"] == "focused"
+    assert prior["candidate_support_policy"] == "fixation_matched"
 
     redistributor = AsymGaussianRedistributor(
         prior["initializer_sigma_left"],
@@ -72,4 +79,26 @@ def test_loader_rejects_full_residual_profile_for_rm(tmp_path):
     write_priors(path, component="full")
 
     with pytest.raises(ValueError, match="focused OB1 attention"):
+        load_fixed_ob1_prior(path, 3.0)
+
+
+def test_loader_rejects_global_support_prior_for_rm(tmp_path):
+    """The legacy global-support fit cannot silently become an RM prior."""
+    path = tmp_path / "fixed_ob1_priors.json"
+    write_priors(path, candidate_support_policy="global")
+
+    with pytest.raises(ValueError, match="fixation-matched candidate support"):
+        load_fixed_ob1_prior(path, 3.0)
+
+
+def test_loader_rejects_legacy_prior_without_support_policy(tmp_path):
+    """A prior without an explicit support policy is not reproducible."""
+    path = tmp_path / "fixed_ob1_priors.json"
+    write_priors(path)
+    records = json.loads(path.read_text(encoding="utf-8"))
+    for record in records:
+        record.pop("candidate_support_policy")
+    path.write_text(json.dumps(records), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="fixation-matched candidate support"):
         load_fixed_ob1_prior(path, 3.0)

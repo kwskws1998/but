@@ -8,15 +8,25 @@ OB1 baseline wrapper, metrics, clustered paired inference, output tables,
 plots, manifests, and Python CLI are implemented.
 
 The current rebuttal route reuses the completed Provo 100-simulation output.
-It adds fixation-onset OB1-attention projection into native T5 relative-token
-space, four-kernel comparison, an asymmetric-versus-symmetric matched result,
-and an optional frozen fixed-OB1-prior RM baseline. The full OneStop run is
-suspended.
+It adds projection of the fixation-onset focused Gaussian component of OB1
+attention into native T5 relative-token space, four-kernel comparison, an
+asymmetric-versus-symmetric matched result, and an optional frozen
+fixed-OB1-prior RM baseline. The full OneStop run is suspended.
+
+The primary kernel-profile policy is now `fixation_matched`: candidate and OB1
+profiles are normalized on the same exact visible relative-token offsets at
+each fixation before pooling with identical weights. The former `global`
+calculation normalized candidates once on the union of all offsets while OB1
+remained fixation-window-conditioned; it is retained only as a legacy support
+sensitivity. Cached 100-simulation post-processing under the corrected primary
+policy is pending. The old s11 Spearman values `0.720` and `0.737` came from the
+legacy policy and are not eligible primary results.
 
 Executed Provo gates include checksum verification, all 55 ET1 passages,
 same-seed and different-seed OB1 checks, all 55 OB1 passages for one reader,
 both redistribution paths with synthetic smoke widths and the effective
-`0.41553/3.46115` pair, and both Human TRT definitions.
+`0.41553/3.46115` integration pair, the selected `0.3738/3.21289` pair, and
+both Human TRT definitions.
 
 Executed OneStop gates include the checksum-verified official Ordinary ZIP,
 streamed strict preparation, exact text-variant audit, the
@@ -49,6 +59,21 @@ span or improves Human TRT prediction.
 | `et1_symmetric` | Symmetric control | ET1 followed by the width-matched symmetric kernel |
 | `et1_asymmetric` | Proposed | ET1 followed by fixed `sigma_left` and `sigma_right` |
 | `ob1` | Cognitive baseline | Published OB1 no-predictability condition |
+
+The separate attention-profile analysis does not use actual ET1-predicted TRT
+magnitudes. It compares the response to one unit of allocation at an anchor
+token:
+
+| ID | Kernel condition | Construction |
+|---|---|---|
+| `raw_delta` | No redistribution | All allocation weight remains at the source token |
+| `width_matched_symmetric` | Symmetric shape control | RMS-width-matched symmetric Gaussian |
+| `learned_asymmetric` | Learned shape | Frozen OASST1-learned asymmetric Gaussian |
+| `fixed_ob1_gaussian` | Descriptive fit | Gaussian fitted to the same projected OB1 profile; not held-out evidence |
+
+For the primary `fixation_matched` estimand, every kernel in this table is
+renormalized on each fixation's observed offset support. The `global` support
+policy is run separately and labeled as a legacy sensitivity.
 
 For each asymmetric pair:
 
@@ -231,19 +256,23 @@ Mass auditing records:
 
 ## 8. Sigma contract
 
-The supplied effective pair:
+The effective pair with the highest reported original reward-model accuracy
+among the 12 supplied runs:
 
 ```text
-sigma_left: 0.41553
-sigma_right: 3.46115
-source reward accuracy: 0.76675
+sigma_left: 0.3738
+sigma_right: 3.21289
+source reward accuracy: 0.76942
 source condition: ET1 + GazeConcat, TRT only
 ```
 
-is used directly and recorded with a stable checkpoint label. It is not
-re-estimated on Provo or OneStop. Because the effective scalars are available,
-the unrelated Llama/reward-model weights are not required for this external
-validation.
+is used directly and recorded with checkpoint ID
+`s11_acc076942_l037380_r321289`. It is not re-estimated on Provo or OneStop.
+The `0.41553/3.46115` pair is retained in the historical completed OB1 cache
+directory and as an earlier integration gate; it is not the selected rebuttal
+checkpoint.
+Because the effective scalars are available, the unrelated Llama/reward-model
+weights are not required for this external validation.
 
 If checkpoints are used instead, the extractor must locate exactly one
 `log_sigma_left` and one `log_sigma_right`, apply
@@ -278,7 +307,7 @@ The 100 seeds are stochastic OB1 replications. They are not 100 Human
 participants and are not fitted models for the 84 Provo or 180 OneStop
 readers.
 
-## 10. Metrics
+## 10. Behavior-level metrics
 
 Spearman uses finite word values directly. JS and word-order Wasserstein clip
 negative model predictions to zero, normalize nonnegative passage mass to
@@ -307,6 +336,33 @@ and reports only ET1 raw, symmetric, and asymmetric against OB1 using
 `ob1_spearman`, `ob1_js_divergence`, and
 `ob1_word_order_wasserstein`. Human-referenced results remain a separate,
 stronger external-validation analysis.
+
+### Kernel-profile metrics
+
+The kernel-profile branch reconstructs the OB1 fixation-onset focused Gaussian
+component from cached simulation trajectories, evaluates it at native T5 token
+centers, and represents positions as relative T5 token offsets. Its primary
+metrics are:
+
+- Spearman correlation over relative-token positions;
+- Jensen–Shannon divergence between normalized offset profiles;
+- Wasserstein distance along the relative-token-offset axis;
+- rightward share of non-center allocation mass.
+
+Under the primary `fixation_matched` policy, OB1 and every candidate share the
+same fixation-specific visible offset support before pooling. The legacy
+`global` policy instead normalizes each candidate once on the global offset
+union and is not a primary cognitive-correspondence estimand. Primary focused,
+full-profile, and equal-fixation post-processing commands must explicitly pass
+`--candidate-support-policy fixation_matched`; the selected-s11 legacy
+sensitivity passes `--candidate-support-policy global`.
+
+The primary saved trajectory used `attention_skew=3`. Re-evaluating the
+attention equation with `attention_skew=4` is a formula-level sensitivity and
+does not rerun the fixation trajectories. The primary `focused` profile excludes
+OB1's constant residual `+0.25`; the `full` sensitivity adds that residual but
+still excludes acuity, within-fixation shifts, lexical activation, saccade
+control, and final TVT.
 
 ## 11. Paired inference
 
@@ -384,17 +440,17 @@ Provo:
 ```bash
 CUDA_VISIBLE_DEVICES=0 python cognitive_model_comparsion/main.py run \
   --corpus provo \
-  --sigma-left 0.41553 \
-  --sigma-right 3.46115 \
+  --sigma-left 0.3738 \
+  --sigma-right 3.21289 \
   --sigma-value-type effective \
-  --sigma-source-accuracy 0.76675 \
-  --checkpoint-id oasst1_et1_trt_only_sigma \
+  --sigma-source-accuracy 0.76942 \
+  --checkpoint-id s11_acc076942_l037380_r321289 \
   --seeds 0:100 \
   --workers 32 \
   --bootstrap-samples 10000 \
   --seed 20260725 \
   --with-special-token-sensitivity \
-  --output-dir cognitive_model_comparsion/outputs/provo_ob1_sigma076675
+  --output-dir cognitive_model_comparsion/outputs/provo_ob1_sigma076942
 ```
 
 OneStop preparation and run:
@@ -410,18 +466,18 @@ python cognitive_model_comparsion/main.py prepare-onestop \
 
 CUDA_VISIBLE_DEVICES=0 python cognitive_model_comparsion/main.py run \
   --corpus onestop \
-  --sigma-left 0.41553 \
-  --sigma-right 3.46115 \
+  --sigma-left 0.3738 \
+  --sigma-right 3.21289 \
   --sigma-value-type effective \
-  --sigma-source-accuracy 0.76675 \
-  --checkpoint-id oasst1_et1_trt_only_sigma \
+  --sigma-source-accuracy 0.76942 \
+  --checkpoint-id s11_acc076942_l037380_r321289 \
   --seeds 0:100 \
   --workers 32 \
   --bootstrap-samples 10000 \
   --seed 20260725 \
   --with-special-token-sensitivity \
   --with-ob1-clean-passage-sensitivity \
-  --output-dir cognitive_model_comparsion/outputs/onestop_ob1_sigma076675
+  --output-dir cognitive_model_comparsion/outputs/onestop_ob1_sigma076942
 ```
 
 ## 14. Verification and interpretation
@@ -437,14 +493,23 @@ Required gates:
   and skipped-word completion;
 - toy metric, percentile interval, paired sign-flip, and article-cluster tests;
 - tables regenerated only from saved machine-readable outputs.
+- candidate-support policy recorded in every kernel-profile table and audit,
+  with `fixation_matched` required for the primary result.
 
 Interpretation:
 
-- Human and OB1 improve: claim greater Human correspondence and directional
-  OB1 consistency;
-- OB1 improves but Human does not: claim only cognitive-model consistency;
-- neither improves: retain downstream reward-model utility but remove a
-  quantitative Human-gaze/perceptual-span interpretation.
+- At the behavior level, Human and OB1 improve: claim greater Human
+  correspondence and directional OB1 consistency.
+- At the behavior level, OB1 improves but Human does not: claim only
+  cognitive-model consistency.
+- At the kernel-profile level, report every specified control and metric,
+  including disagreements. A better Spearman or rightward share alone supports
+  directional shape correspondence, not general cognitive-model superiority.
+- Do not reuse the old `0.720`/`0.737` global-support values as primary; report
+  corrected values only after the cached 100-simulation fixation-matched
+  post-processing and sensitivity checks finish.
+- If neither branch improves: retain downstream reward-model utility but remove
+  a quantitative Human-gaze/perceptual-span interpretation.
 
 Human TRT is overt fixation allocation. It must not be described as a direct
 measurement of covert perceptual span. OB1 letter coordinates must not be

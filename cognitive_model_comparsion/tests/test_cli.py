@@ -15,6 +15,7 @@ from cognitive_model_comparsion.main import (
     load_sigma_records,
     parse_seed_specification,
     runtime_manifest,
+    validate_ob1_manifest_against_fixations,
     validate_predict_sigma_arguments,
     validate_trial_count,
 )
@@ -52,6 +53,241 @@ def test_parser_exposes_all_required_subcommands():
         "compare-attention-profile",
         "run",
     }
+
+
+def test_attention_profile_help_separates_kernel_shape_from_et1_trt():
+    """The CLI states the estimand and the conditional bootstrap scope."""
+    parser = build_parser()
+    subparser_action = next(
+        action
+        for action in parser._actions
+        if action.dest == "command"
+    )
+    help_text = subparser_action.choices[
+        "compare-attention-profile"
+    ].format_help()
+    normalized_help = " ".join(help_text.split())
+
+    assert "not ET1-predicted TRT values" in normalized_help
+    assert "not its predicted TRT magnitudes" in normalized_help
+    assert "does not rerun OB1 trajectories" in normalized_help
+    assert "simulation IDs are pooled" in normalized_help
+    assert "--allow-missing-ob1-manifest" in normalized_help
+    assert "--candidate-support-policy" in normalized_help
+    assert "exact visible offsets" in normalized_help
+
+    default_args = parser.parse_args(
+        [
+            "compare-attention-profile",
+            "--sigma-left",
+            "0.4",
+            "--sigma-right",
+            "3.4",
+            "--checkpoint-id",
+            "selected",
+            "--et1-dir",
+            "outputs/et1",
+            "--ob1-dir",
+            "outputs/ob1",
+            "--output-dir",
+            "outputs/attention",
+        ]
+    )
+    assert default_args.candidate_support_policy == "fixation_matched"
+    legacy_args = parser.parse_args(
+        [
+            "compare-attention-profile",
+            "--sigma-left",
+            "0.4",
+            "--sigma-right",
+            "3.4",
+            "--checkpoint-id",
+            "selected",
+            "--et1-dir",
+            "outputs/et1",
+            "--ob1-dir",
+            "outputs/ob1",
+            "--output-dir",
+            "outputs/attention",
+            "--candidate-support-policy",
+            "global",
+        ]
+    )
+    assert legacy_args.candidate_support_policy == "global"
+
+
+def valid_ob1_manifest_inputs():
+    """Build one exact manifest, fixation table, and canonical passage grid."""
+    passages = pd.DataFrame(
+        {"passage_id_zero_based": [0, 1]}
+    )
+    fixations = pd.DataFrame(
+        {
+            "simulation_id": [0, 0, 1, 1],
+            "seed": [41, 41, 42, 42],
+            "text_id": [0, 1, 0, 1],
+        }
+    )
+    manifest = {
+        "condition": "baseline_no_predictability",
+        "fixation_rows": 4,
+        "n_trials": 2,
+        "parameters": {"attention_skew": 3},
+        "runtimes": [
+            {"simulation_id": 0, "seed": 41, "seconds": 1.0},
+            {"simulation_id": 1, "seed": 42, "seconds": 1.0},
+        ],
+        "seeds": [41, 42],
+    }
+    return manifest, fixations, passages
+
+
+def test_ob1_manifest_validation_checks_exact_identity_and_trial_count():
+    """Provenance must match exact seeds, simulations, and passages."""
+    manifest, fixations, passages = valid_ob1_manifest_inputs()
+    validation = validate_ob1_manifest_against_fixations(
+        manifest,
+        fixations,
+        passages,
+    )
+    assert validation["trajectory_attention_skew"] == 3.0
+    assert validation["validated_trial_count"] == 2
+    assert not validation["legacy_parallel_manifest_missing_n_trials"]
+    assert validation["trial_count_validation_source"].startswith(
+        "manifest n_trials"
+    )
+
+    legacy_parallel = json.loads(json.dumps(manifest))
+    legacy_parallel.pop("n_trials")
+    legacy_parallel["parallel"] = True
+    legacy_validation = validate_ob1_manifest_against_fixations(
+        legacy_parallel,
+        fixations,
+        passages,
+    )
+    assert legacy_validation["validated_trial_count"] == 2
+    assert legacy_validation[
+        "legacy_parallel_manifest_missing_n_trials"
+    ]
+    assert legacy_validation["trial_count_validation_source"].startswith(
+        "legacy parallel manifest"
+    )
+
+    missing_serial_trials = json.loads(json.dumps(manifest))
+    missing_serial_trials.pop("n_trials")
+    with pytest.raises(ValueError, match="legacy parallel"):
+        validate_ob1_manifest_against_fixations(
+            missing_serial_trials,
+            fixations,
+            passages,
+        )
+
+    wrong_seeds = json.loads(json.dumps(manifest))
+    wrong_seeds["seeds"] = [41, 99]
+    with pytest.raises(ValueError, match="seed set"):
+        validate_ob1_manifest_against_fixations(
+            wrong_seeds,
+            fixations,
+            passages,
+        )
+
+    wrong_runtime = json.loads(json.dumps(manifest))
+    wrong_runtime["runtimes"][1]["simulation_id"] = 9
+    with pytest.raises(ValueError, match="simulation-seed pairs disagree"):
+        validate_ob1_manifest_against_fixations(
+            wrong_runtime,
+            fixations,
+            passages,
+        )
+
+    wrong_trials = json.loads(json.dumps(manifest))
+    wrong_trials["n_trials"] = 1
+    with pytest.raises(ValueError, match="canonical passage count"):
+        validate_ob1_manifest_against_fixations(
+            wrong_trials,
+            fixations,
+            passages,
+        )
+
+
+def test_attention_profile_requires_manifest_or_explicit_override(
+    tmp_path,
+    monkeypatch,
+):
+    """Missing trajectory provenance is rejected unless explicitly allowed."""
+    manifest, fixations, passages = valid_ob1_manifest_inputs()
+    del manifest
+    et1_dir = tmp_path / "et1"
+    ob1_dir = tmp_path / "ob1"
+    et1_dir.mkdir()
+    ob1_dir.mkdir()
+    pd.DataFrame({"placeholder": [1]}).to_csv(
+        et1_dir / "et1_token_values.csv",
+        index=False,
+    )
+    fixations.to_csv(ob1_dir / "ob1_fixations.csv", index=False)
+    args = argparse.Namespace(
+        allow_initial_sigmas=False,
+        allow_missing_ob1_manifest=False,
+        bootstrap_samples=10,
+        checkpoint=[],
+        checkpoint_id=["selected"],
+        corpus="provo",
+        candidate_support_policy="fixation_matched",
+        et1_dir=et1_dir,
+        fixation_weighting="duration",
+        ob1_attention_skew=[3.0],
+        ob1_dir=ob1_dir,
+        output_dir=tmp_path / "result",
+        processed_dir=tmp_path / "processed",
+        profile_component="focused",
+        seed=7,
+        sigma_json=None,
+        sigma_left=[0.4],
+        sigma_prefix=None,
+        sigma_right=[3.4],
+        sigma_source_accuracy=[],
+        sigma_value_type="effective",
+    )
+    monkeypatch.setattr(
+        cognitive_main,
+        "ensure_prepared",
+        lambda *_: (passages, pd.DataFrame()),
+    )
+
+    with pytest.raises(FileNotFoundError, match="worker manifest"):
+        cognitive_main.command_compare_attention_profile(args)
+
+    captured = {}
+
+    def fake_compare(*_args, **kwargs):
+        captured["trajectory_attention_skew"] = kwargs[
+            "trajectory_attention_skew"
+        ]
+        captured["candidate_support_policy"] = kwargs[
+            "candidate_support_policy"
+        ]
+        return {"audit": {}}
+
+    monkeypatch.setattr(
+        cognitive_main,
+        "compare_attention_profiles",
+        fake_compare,
+    )
+    monkeypatch.setattr(
+        cognitive_main,
+        "write_attention_profile_outputs",
+        lambda *_: None,
+    )
+    monkeypatch.setattr(
+        cognitive_main,
+        "write_sigma_records",
+        lambda *_: None,
+    )
+    args.allow_missing_ob1_manifest = True
+    cognitive_main.command_compare_attention_profile(args)
+    assert captured["trajectory_attention_skew"] is None
+    assert captured["candidate_support_policy"] == "fixation_matched"
 
 
 def test_trial_count_covers_only_published_provo_passages():
@@ -212,7 +448,7 @@ def test_parser_accepts_confirmed_direct_sigma_values():
 
 
 def test_compact_sigma_json_expands_to_runtime_records(tmp_path):
-    """A checked sweep config needs only IDs, accuracies, and effective sigmas."""
+    """A sweep config needs only IDs, accuracies, and effective sigmas."""
     path = tmp_path / "sigmas.json"
     path.write_text(
         json.dumps(
@@ -610,7 +846,7 @@ def test_run_evaluate_writes_nested_ob1_clean_sensitivity(
     tmp_path,
     monkeypatch,
 ):
-    """Clean passages produce a nested bundle without replacing primary rows."""
+    """Clean passages produce a nested bundle without replacing primary."""
     processed_dir = tmp_path / "processed"
     et1_dir = tmp_path / "et1"
     ob1_dir = tmp_path / "ob1"

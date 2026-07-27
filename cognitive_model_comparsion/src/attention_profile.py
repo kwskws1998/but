@@ -28,10 +28,17 @@ PROFILE_METHODS = (
     "learned_asymmetric",
 )
 PROFILE_DISPLAY_NAMES = {
-    "raw_delta": "ET1 raw (delta kernel)",
-    "width_matched_symmetric": "Width-matched symmetric",
-    "fixed_ob1_gaussian": "Fixed OB1-fitted Gaussian",
-    "learned_asymmetric": "Learned asymmetric",
+    "raw_delta": (
+        "No redistribution "
+        "(all allocation weight remains at the source token)"
+    ),
+    "width_matched_symmetric": (
+        "RMS-width-matched symmetric redistribution kernel"
+    ),
+    "fixed_ob1_gaussian": (
+        "Descriptive Gaussian fitted to the same OB1 profile"
+    ),
+    "learned_asymmetric": "Learned asymmetric redistribution kernel",
 }
 PROFILE_METRIC_DIRECTIONS = {
     "profile_spearman": "higher",
@@ -50,6 +57,105 @@ OB1_MAX_ATTENTION_WIDTH = 5.0
 OB1_RESIDUAL_ATTENTION = 0.25
 OB1_WINDOW_WORDS_LEFT = 1
 OB1_WINDOW_WORDS_RIGHT = 3
+CANDIDATE_SUPPORT_POLICIES = (
+    "fixation_matched",
+    "global",
+)
+PROFILE_MEAN_CI_SCOPE = (
+    "95% percentile passage-bootstrap CI conditional on pooled OB1 "
+    "simulations and fixed sigma values"
+)
+PROFILE_CONTRAST_CI_SCOPE = (
+    "95% percentile paired-passage-bootstrap CI conditional on pooled OB1 "
+    "simulations and fixed sigma values"
+)
+FIXATION_MATCHED_ANALYSIS_ESTIMAND = (
+    "fixation-context-conditioned correspondence: each candidate "
+    "unit-impulse kernel and the OB1 fixation-onset attention component are "
+    "normalized on the same exact visible relative-token offsets for every "
+    "fixation, then pooled with identical fixation weights; actual "
+    "ET1-predicted TRT magnitudes are not used"
+)
+GLOBAL_SUPPORT_ANALYSIS_ESTIMAND = (
+    "legacy intrinsic-kernel sensitivity: each candidate unit-impulse kernel "
+    "is normalized once on the global union of observed relative-token "
+    "offsets, while OB1 remains fixation-window-conditioned; actual "
+    "ET1-predicted TRT magnitudes are not used"
+)
+PROFILE_ANALYSIS_ESTIMAND = FIXATION_MATCHED_ANALYSIS_ESTIMAND
+RIGHTWARD_SHARE_SCOPE = (
+    "descriptive point estimate from the fixation-weighted pooled offset "
+    "profile under the declared candidate-support policy; no bootstrap CI"
+)
+
+
+def candidate_support_policy_metadata(policy: str) -> tuple[str, str]:
+    """Return the display label and estimand for one support policy."""
+    if policy == "fixation_matched":
+        return (
+            "Primary: candidate normalized on each fixation's exact visible "
+            "relative-token support",
+            FIXATION_MATCHED_ANALYSIS_ESTIMAND,
+        )
+    if policy == "global":
+        return (
+            "Legacy sensitivity: candidate normalized once on global support",
+            GLOBAL_SUPPORT_ANALYSIS_ESTIMAND,
+        )
+    raise ValueError(
+        "candidate support policy must be fixation_matched or global"
+    )
+
+
+def ob1_reference_display_name(profile_component: str) -> str:
+    """Return an explicit label for the reconstructed OB1 reference."""
+    if profile_component == "focused":
+        component_label = "focused Gaussian component"
+    elif profile_component == "full":
+        component_label = "focused-plus-constant-residual profile"
+    else:
+        raise ValueError("OB1 profile component must be focused or full")
+    return (
+        f"OB1 fixation-onset {component_label} "
+        "projected to relative native T5-token offsets"
+    )
+
+
+def add_attention_skew_provenance(
+    table: pd.DataFrame,
+    trajectory_attention_skew: float | None,
+) -> None:
+    """Label trajectory-matched rows and formula-only sensitivities."""
+    matches = []
+    roles = []
+    for requested_skew in table["ob1_attention_skew"]:
+        if trajectory_attention_skew is None:
+            matches.append(pd.NA)
+            roles.append(
+                "unverified: trajectory attention_skew unavailable"
+            )
+        elif math.isclose(
+            float(requested_skew),
+            trajectory_attention_skew,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ):
+            matches.append(True)
+            roles.append(
+                "trajectory-matched attention-function evaluation"
+            )
+        else:
+            matches.append(False)
+            roles.append(
+                "formula sensitivity: attention function re-evaluated on "
+                "saved trajectory geometry"
+            )
+    table["requested_skew_matches_trajectory"] = pd.Series(
+        matches,
+        index=table.index,
+        dtype="boolean",
+    )
+    table["attention_skew_analysis_role"] = roles
 
 
 def clean_ob1_word(value: str) -> str:
@@ -164,7 +270,9 @@ def ob1_attention_weight(
     """Evaluate the vendored OB1 asymmetric attention equation."""
     eccentricity = np.asarray(eccentricity, dtype=float)
     if attention_width <= 0 or attention_skew < 1:
-        raise ValueError("OB1 width must be positive and skew must be at least one")
+        raise ValueError(
+            "OB1 width must be positive and skew must be at least one"
+        )
     sigma = np.where(
         eccentricity < 0,
         attention_width / attention_skew,
@@ -252,7 +360,9 @@ def delta_weights(relative_offsets: np.ndarray) -> np.ndarray:
     weights = offsets.eq(0) if isinstance(offsets, pd.Series) else offsets == 0
     weights = np.asarray(weights, dtype=float)
     if int(weights.sum()) != 1:
-        raise ValueError("Every fixation geometry must contain one anchor token")
+        raise ValueError(
+            "Every fixation geometry must contain one anchor token"
+        )
     return weights
 
 
@@ -266,9 +376,10 @@ def project_ob1_attention_to_t5(
 ) -> tuple[
     dict[float, dict[int, dict[int, float]]],
     np.ndarray,
+    dict[int, dict[tuple[int, ...], float]],
     dict,
 ]:
-    """Project fixation-onset OB1 attention into native T5 offsets."""
+    """Project OB1 attention and aggregate exact fixation support patterns."""
     if fixation_weighting not in {"duration", "equal"}:
         raise ValueError("fixation weighting must be duration or equal")
     if profile_component not in {"focused", "full"}:
@@ -327,6 +438,10 @@ def project_ob1_attention_to_t5(
         }
         for skew in skews
     }
+    support_pattern_weights = {
+        passage_id: defaultdict(float)
+        for passage_id in passage_lookup
+    }
     fixation_count = 0
     duration_total = 0.0
     widths_used = []
@@ -367,7 +482,9 @@ def project_ob1_attention_to_t5(
             if word_id < 0 or word_id >= len(clean_words):
                 raise ValueError("OB1 fixation word ID is outside the passage")
             if clean_ob1_word(fixation.word) != clean_words[word_id]:
-                raise ValueError("OB1 fixation word does not match the passage")
+                raise ValueError(
+                    "OB1 fixation word does not match the passage"
+                )
             window_start = max(0, word_id - OB1_WINDOW_WORDS_LEFT)
             window_end = min(
                 len(clean_words) - 1,
@@ -429,6 +546,20 @@ def project_ob1_attention_to_t5(
                 if fixation_weighting == "duration"
                 else 1.0
             )
+            support_pattern = tuple(
+                int(offset) for offset in relative_offsets
+            )
+            if len(support_pattern) != len(set(support_pattern)):
+                raise ValueError(
+                    "Fixation support contains duplicate token offsets"
+                )
+            if 0 not in support_pattern:
+                raise ValueError(
+                    "Fixation support does not contain its anchor token"
+                )
+            support_pattern_weights[passage_id][
+                support_pattern
+            ] += fixation_weight
             for skew in skews:
                 weights = ob1_attention_weight(
                     eccentricity,
@@ -454,6 +585,20 @@ def project_ob1_attention_to_t5(
                 ].items()
             }
     support = np.arange(minimum_offset, maximum_offset + 1, dtype=int)
+    normalized_support_patterns = {
+        passage_id: {
+            offsets: float(weight)
+            for offsets, weight in patterns.items()
+        }
+        for passage_id, patterns in support_pattern_weights.items()
+    }
+    global_pattern_count = len(
+        {
+            offsets
+            for patterns in normalized_support_patterns.values()
+            for offsets in patterns
+        }
+    )
     reference_profiles = {skew: {} for skew in skews}
     for skew in skews:
         for passage_id, sparse in sparse_profiles[skew].items():
@@ -473,6 +618,14 @@ def project_ob1_attention_to_t5(
         "seed_count": int(ob1_fixations["seed"].nunique()),
         "minimum_relative_token_offset": int(minimum_offset),
         "maximum_relative_token_offset": int(maximum_offset),
+        "distinct_fixation_support_patterns": int(global_pattern_count),
+        "passage_support_pattern_count_sum": int(
+            sum(
+                len(patterns)
+                for patterns in normalized_support_patterns.values()
+            )
+        ),
+        "fixation_support_patterns_aggregated": True,
         "minimum_visible_t5_token_count": int(min(visible_token_counts)),
         "maximum_visible_t5_token_count": int(max(visible_token_counts)),
         "mean_visible_t5_token_count": float(
@@ -505,7 +658,12 @@ def project_ob1_attention_to_t5(
             "T5 token in the fixated word"
         ),
     }
-    return reference_profiles, support, audit
+    return (
+        reference_profiles,
+        support,
+        normalized_support_patterns,
+        audit,
+    )
 
 
 def dictionary_profile(
@@ -529,7 +687,7 @@ def candidate_profile(
     sigma_left: float | None = None,
     sigma_right: float | None = None,
 ) -> np.ndarray:
-    """Build one candidate kernel on the common relative-token support."""
+    """Build one candidate kernel on the declared relative-token support."""
     if method == "raw_delta":
         return delta_weights(support)
     if sigma_left is None or sigma_right is None:
@@ -537,22 +695,148 @@ def candidate_profile(
     return gaussian_weights(support, sigma_left, sigma_right)
 
 
+def merge_support_pattern_weights(
+    passage_patterns: dict[int, dict[tuple[int, ...], float]],
+) -> dict[tuple[int, ...], float]:
+    """Pool already aggregated fixation-support patterns across passages."""
+    merged = defaultdict(float)
+    for patterns in passage_patterns.values():
+        for offsets, weight in patterns.items():
+            if not math.isfinite(weight) or weight <= 0:
+                raise ValueError(
+                    "Fixation-support pattern weight must be positive"
+                )
+            merged[offsets] += float(weight)
+    if not merged:
+        raise ValueError("No fixation-support patterns were collected")
+    return dict(merged)
+
+
+def candidate_profile_on_support_patterns(
+    pattern_weights: dict[tuple[int, ...], float],
+    support: np.ndarray,
+    method: str,
+    sigma_left: float | None = None,
+    sigma_right: float | None = None,
+) -> np.ndarray:
+    """Normalize on each exact fixation support and pool identical patterns."""
+    sparse = defaultdict(float)
+    total_weight = 0.0
+    for offsets, pattern_weight in pattern_weights.items():
+        weight = float(pattern_weight)
+        if not math.isfinite(weight) or weight <= 0:
+            raise ValueError(
+                "Fixation-support pattern weight must be positive"
+            )
+        local_offsets = np.asarray(offsets, dtype=int)
+        local_profile = candidate_profile(
+            local_offsets,
+            method,
+            sigma_left,
+            sigma_right,
+        )
+        for offset, value in zip(local_offsets, local_profile):
+            sparse[int(offset)] += weight * float(value)
+        total_weight += weight
+    if total_weight <= 0:
+        raise ValueError("Candidate fixation-support mass is empty")
+    return dictionary_profile(
+        {
+            offset: value / total_weight
+            for offset, value in sparse.items()
+        },
+        support,
+    )
+
+
+def candidate_profiles_by_passage(
+    passage_patterns: dict[int, dict[tuple[int, ...], float]],
+    support: np.ndarray,
+    method: str,
+    sigma_left: float | None,
+    sigma_right: float | None,
+    candidate_support_policy: str,
+) -> dict[int, np.ndarray]:
+    """Build passage-specific candidates under the declared support policy."""
+    candidate_support_policy_metadata(candidate_support_policy)
+    if candidate_support_policy == "global":
+        shared = candidate_profile(
+            support,
+            method,
+            sigma_left,
+            sigma_right,
+        )
+        return {
+            passage_id: shared.copy()
+            for passage_id in passage_patterns
+        }
+    return {
+        passage_id: candidate_profile_on_support_patterns(
+            patterns,
+            support,
+            method,
+            sigma_left,
+            sigma_right,
+        )
+        for passage_id, patterns in passage_patterns.items()
+    }
+
+
+def pool_passage_profiles(
+    passage_profiles: dict[int, np.ndarray],
+    passage_patterns: dict[int, dict[tuple[int, ...], float]],
+) -> np.ndarray:
+    """Pool passage profiles with their exact total fixation weights."""
+    passage_ids = sorted(passage_profiles)
+    if passage_ids != sorted(passage_patterns):
+        raise ValueError(
+            "Passage profiles and support patterns use different passages"
+        )
+    weights = np.asarray(
+        [
+            sum(passage_patterns[passage_id].values())
+            for passage_id in passage_ids
+        ],
+        dtype=float,
+    )
+    if not np.isfinite(weights).all() or np.any(weights <= 0):
+        raise ValueError("Passage fixation weights must be positive")
+    pooled = np.average(
+        np.stack(
+            [passage_profiles[passage_id] for passage_id in passage_ids]
+        ),
+        axis=0,
+        weights=weights,
+    )
+    return pooled / pooled.sum()
+
+
 def fit_ob1_gaussian_prior(
     reference_profile: np.ndarray,
     support: np.ndarray,
+    candidate_builder=None,
+    candidate_support_policy: str = "global",
 ) -> dict:
-    """Fit a fixed asymmetric Gaussian to one projected OB1 profile."""
+    """Fit an asymmetric Gaussian under the declared support policy."""
     reference = np.asarray(reference_profile, dtype=float)
     reference = reference / reference.sum()
+    candidate_support_policy_metadata(candidate_support_policy)
 
     def objective(parameters: np.ndarray) -> float:
         sigma_left = math.exp(float(parameters[0]))
         sigma_right = sigma_left * math.exp(float(parameters[1]))
-        candidate = candidate_profile(
-            support,
-            "fixed_ob1_gaussian",
-            float(sigma_left),
-            float(sigma_right),
+        candidate = (
+            candidate_profile(
+                support,
+                "fixed_ob1_gaussian",
+                float(sigma_left),
+                float(sigma_right),
+            )
+            if candidate_builder is None
+            else candidate_builder(
+                float(sigma_left),
+                float(sigma_right),
+            )
         )
         return float(jensenshannon(reference, candidate, base=2.0) ** 2)
 
@@ -578,6 +862,7 @@ def fit_ob1_gaussian_prior(
         "optimizer": "L-BFGS-B",
         "optimizer_iterations": int(result.nit),
         "fit_objective": "Jensen-Shannon divergence in T5 token-offset space",
+        "candidate_support_policy": candidate_support_policy,
     }
 
 
@@ -694,7 +979,9 @@ def profile_paired_contrasts(
             ].set_index("passage_id_zero_based")
             common = candidate.index.intersection(baseline.index)
             if len(common) < 2:
-                raise ValueError("Profile contrast needs at least two passages")
+                raise ValueError(
+                    "Profile contrast needs at least two passages"
+                )
             for metric, direction in PROFILE_METRIC_DIRECTIONS.items():
                 if direction == "higher":
                     differences = (
@@ -743,8 +1030,13 @@ def compare_attention_profiles(
     profile_component: str = "focused",
     bootstrap_samples: int = 10000,
     seed: int = 20260725,
+    trajectory_attention_skew: float | None = None,
+    candidate_support_policy: str = "fixation_matched",
 ) -> dict:
-    """Compare one shared OB1 projection with one or more sigma records."""
+    """Compare allocation kernels with a projected OB1 attention component."""
+    support_policy_label, analysis_estimand = (
+        candidate_support_policy_metadata(candidate_support_policy)
+    )
     if isinstance(sigma_records, dict):
         sigma_records = [sigma_records]
     if not sigma_records:
@@ -787,7 +1079,7 @@ def compare_attention_profiles(
     ]
     if len(checkpoint_ids) != len(set(checkpoint_ids)):
         raise ValueError("Sigma record checkpoint IDs must be unique")
-    references, support, collection_audit = (
+    references, support, support_patterns, collection_audit = (
         project_ob1_attention_to_t5(
             passages,
             token_values,
@@ -800,37 +1092,87 @@ def compare_attention_profiles(
     profile_rows = []
     metric_rows = []
     fixed_prior_records = []
+    global_support_patterns = merge_support_pattern_weights(
+        support_patterns
+    )
+    candidate_cache = {}
+    for sigma_record in normalized_records:
+        checkpoint_id = sigma_record["checkpoint_id"]
+        symmetric_sigma = sigma_record[
+            "width_matched_symmetric_sigma"
+        ]
+        method_sigmas = {
+            "raw_delta": (None, None),
+            "width_matched_symmetric": (
+                symmetric_sigma,
+                symmetric_sigma,
+            ),
+            "learned_asymmetric": (
+                sigma_record["learned_sigma_left"],
+                sigma_record["learned_sigma_right"],
+            ),
+        }
+        candidate_cache[checkpoint_id] = {}
+        for method, (left, right) in method_sigmas.items():
+            passage_candidates = candidate_profiles_by_passage(
+                support_patterns,
+                support,
+                method,
+                left,
+                right,
+                candidate_support_policy,
+            )
+            candidate_cache[checkpoint_id][method] = {
+                "passages": passage_candidates,
+                "global": pool_passage_profiles(
+                    passage_candidates,
+                    support_patterns,
+                ),
+            }
 
     for skew in sorted(references):
         passage_references = {
             passage_id: dictionary_profile(values, support)
             for passage_id, values in references[skew].items()
         }
-        reference_global = np.average(
-            np.stack(list(passage_references.values())),
-            axis=0,
-            weights=[
-                float(
-                    ob1_fixations.loc[
-                        ob1_fixations["text_id"].astype(int).eq(
-                            passage_id
-                        ),
-                        "fixation_duration",
-                    ].sum()
-                )
-                if fixation_weighting == "duration"
-                else int(
-                    ob1_fixations["text_id"].astype(int).eq(
-                        passage_id
-                    ).sum()
-                )
-                for passage_id in passage_references
-            ],
+        reference_global = pool_passage_profiles(
+            passage_references,
+            support_patterns,
         )
-        reference_global = reference_global / reference_global.sum()
+        if candidate_support_policy == "fixation_matched":
+
+            def fixed_candidate_builder(
+                sigma_left: float,
+                sigma_right: float,
+            ) -> np.ndarray:
+                """Build the fixed prior on pooled exact fixation supports."""
+                return candidate_profile_on_support_patterns(
+                    global_support_patterns,
+                    support,
+                    "fixed_ob1_gaussian",
+                    sigma_left,
+                    sigma_right,
+                )
+
+        else:
+            fixed_candidate_builder = None
         fixed_prior = fit_ob1_gaussian_prior(
             reference_global,
             support,
+            candidate_builder=fixed_candidate_builder,
+            candidate_support_policy=candidate_support_policy,
+        )
+        fixed_passage_candidates = candidate_profiles_by_passage(
+            support_patterns,
+            support,
+            "fixed_ob1_gaussian",
+            fixed_prior["sigma_left"],
+            fixed_prior["sigma_right"],
+            candidate_support_policy,
+        )
+        fixed_global_candidate = pool_passage_profiles(
+            fixed_passage_candidates,
+            support_patterns,
         )
         fixed_prior_records.append(
             {
@@ -838,38 +1180,21 @@ def compare_attention_profiles(
                 "profile_component": profile_component,
                 "fixation_weighting": fixation_weighting,
                 "projection_coordinate": "relative_native_t5_token_index",
+                "candidate_support_policy_label": support_policy_label,
                 **fixed_prior,
             }
         )
         for sigma_record in normalized_records:
-            learned_left = sigma_record["learned_sigma_left"]
-            learned_right = sigma_record["learned_sigma_right"]
-            symmetric_sigma = sigma_record[
-                "width_matched_symmetric_sigma"
+            checkpoint_candidates = candidate_cache[
+                sigma_record["checkpoint_id"]
             ]
-            method_sigmas = {
-                "raw_delta": (None, None),
-                "width_matched_symmetric": (
-                    symmetric_sigma,
-                    symmetric_sigma,
-                ),
-                "fixed_ob1_gaussian": (
-                    fixed_prior["sigma_left"],
-                    fixed_prior["sigma_right"],
-                ),
-                "learned_asymmetric": (
-                    learned_left,
-                    learned_right,
-                ),
+            method_candidates = {
+                **checkpoint_candidates,
+                "fixed_ob1_gaussian": {
+                    "passages": fixed_passage_candidates,
+                    "global": fixed_global_candidate,
+                },
             }
-            global_candidates = {}
-            for method, (left, right) in method_sigmas.items():
-                global_candidates[method] = candidate_profile(
-                    support,
-                    method,
-                    left,
-                    right,
-                )
             for index, offset in enumerate(support):
                 profile_rows.append(
                     {
@@ -880,20 +1205,17 @@ def compare_attention_profiles(
                             reference_global[index]
                         ),
                         **{
-                            method: float(profile[index])
-                            for method, profile
-                            in global_candidates.items()
+                            method: float(
+                                candidates["global"][index]
+                            )
+                            for method, candidates
+                            in method_candidates.items()
                         },
                     }
                 )
             for passage_id, reference in passage_references.items():
-                for method, (left, right) in method_sigmas.items():
-                    candidate = candidate_profile(
-                        support,
-                        method,
-                        left,
-                        right,
-                    )
+                for method, candidates in method_candidates.items():
+                    candidate = candidates["passages"][passage_id]
                     metric_rows.append(
                         {
                             **sigma_record,
@@ -909,16 +1231,67 @@ def compare_attention_profiles(
                     )
 
     passage_metrics = pd.DataFrame(metric_rows)
+    reference_profile = ob1_reference_display_name(profile_component)
+    passage_metrics["reference_profile"] = reference_profile
+    passage_metrics["analysis_estimand"] = analysis_estimand
+    passage_metrics["actual_et1_trt_magnitudes_used"] = False
+    passage_metrics["candidate_support_policy"] = (
+        candidate_support_policy
+    )
+    passage_metrics["candidate_support_policy_label"] = (
+        support_policy_label
+    )
     result_table = summarize_profile_metrics(
         passage_metrics,
         bootstrap_samples,
         seed,
     )
+    result_table["reference_profile"] = reference_profile
+    result_table["analysis_estimand"] = analysis_estimand
+    result_table["actual_et1_trt_magnitudes_used"] = False
+    result_table["candidate_support_policy"] = candidate_support_policy
+    result_table["candidate_support_policy_label"] = (
+        support_policy_label
+    )
+    result_table["ci_scope"] = PROFILE_MEAN_CI_SCOPE
     contrasts = profile_paired_contrasts(
         passage_metrics,
         bootstrap_samples,
         seed,
     )
+    contrasts["candidate_display_name"] = contrasts["candidate"].map(
+        PROFILE_DISPLAY_NAMES
+    )
+    contrasts["baseline_display_name"] = contrasts["baseline"].map(
+        PROFILE_DISPLAY_NAMES
+    )
+    contrasts["reference_profile"] = reference_profile
+    contrasts["analysis_estimand"] = analysis_estimand
+    contrasts["actual_et1_trt_magnitudes_used"] = False
+    contrasts["candidate_support_policy"] = candidate_support_policy
+    contrasts["candidate_support_policy_label"] = support_policy_label
+    contrasts["ci_scope"] = PROFILE_CONTRAST_CI_SCOPE
+    trajectory_skew = (
+        None
+        if trajectory_attention_skew is None
+        else float(trajectory_attention_skew)
+    )
+    skew_policy = (
+        "trajectory attention skew was not available from provenance; "
+        "requested skews reweight the saved fixation geometries without "
+        "rerunning OB1"
+        if trajectory_skew is None
+        else (
+            "requested skews reweight saved fixation geometries without "
+            f"rerunning OB1; the saved trajectory used attention_skew="
+            f"{trajectory_skew:g}"
+        )
+    )
+    for table in (passage_metrics, result_table, contrasts):
+        table["profile_component"] = profile_component
+        table["fixation_weighting"] = fixation_weighting
+        table["trajectory_attention_skew"] = trajectory_skew
+        add_attention_skew_provenance(table, trajectory_skew)
     audit = {
         **collection_audit,
         "checkpoint_count": len(normalized_records),
@@ -926,39 +1299,256 @@ def compare_attention_profiles(
         "attention_skews": [
             float(value) for value in sorted(references)
         ],
-        "attention_skew_trajectory_policy": (
-            "reweight saved fixation geometries without rerunning OB1; "
-            "the vendored simulation trajectory uses attention_skew=3"
-        ),
+        "trajectory_attention_skew": trajectory_skew,
+        "attention_skew_trajectory_policy": skew_policy,
+        "attention_skew_analysis_roles": {
+            f"{float(value):g}": (
+                "unverified: trajectory attention_skew unavailable"
+                if trajectory_skew is None
+                else (
+                    "trajectory-matched attention-function evaluation"
+                    if math.isclose(
+                        float(value),
+                        trajectory_skew,
+                        rel_tol=0.0,
+                        abs_tol=1e-12,
+                    )
+                    else (
+                        "formula sensitivity: attention function "
+                        "re-evaluated on saved trajectory geometry"
+                    )
+                )
+            )
+            for value in sorted(references)
+        },
         "bootstrap_samples": int(bootstrap_samples),
         "bootstrap_seed": int(seed),
+        "ci_level": 0.95,
+        "method_mean_ci": (
+            "percentile bootstrap over passage-level metrics"
+        ),
+        "method_contrast_ci": (
+            "percentile bootstrap over paired passage-level differences"
+        ),
+        "ci_resampling_unit": "passage",
+        "ob1_simulations_pooled_before_bootstrap": True,
+        "ob1_simulation_ids_resampled": False,
+        "sigma_values_treated_as_fixed": True,
+        "rightward_share_scope": RIGHTWARD_SHARE_SCOPE,
+        "candidate_support_policy": candidate_support_policy,
+        "candidate_support_policy_label": support_policy_label,
+        "candidate_support_policy_is_primary": (
+            candidate_support_policy == "fixation_matched"
+        ),
+        "candidate_support_policy_legacy_sensitivity": (
+            candidate_support_policy == "global"
+        ),
         "reference_coordinate": "OB1 cleaned-letter coordinates",
         "comparison_coordinate": "relative native T5 token index",
-        "reference_profile": (
-            f"OB1 fixation-onset {profile_component} attention component; "
-            "excludes acuity, within-fixation attention shifts, lexical "
-            "activation, saccade control, and final TVT"
+        "reference_profile": reference_profile,
+        "reference_profile_exclusions": (
+            "acuity, within-fixation attention shifts, lexical activation, "
+            "saccade control, and final TVT"
+        ),
+        "analysis_estimand": analysis_estimand,
+        "actual_et1_trt_magnitudes_used": False,
+        "et1_token_table_usage": (
+            "native T5 token geometry and character alignment only"
+        ),
+        "no_redistribution_definition": (
+            "unit allocation weight at the source token and zero weight at "
+            "all neighboring token offsets"
         ),
         "attention_width_update": (
             "regression: max(recorded-1,3); otherwise min(recorded+0.5,5)"
         ),
         "fixed_prior_fit_scope": (
-            "all projected OB1 fixations; its alignment to the same OB1 "
-            "profile is descriptive, not held-out validation"
+            "all projected OB1 fixations under the declared candidate-support "
+            "policy; its alignment to the same OB1 profile is descriptive, "
+            "not held-out validation"
         ),
     }
     if len(normalized_records) == 1:
         audit.update(normalized_records[0])
     attention_profiles = pd.DataFrame(profile_rows)
+    attention_profiles["profile_component"] = profile_component
+    attention_profiles["reference_profile"] = reference_profile
+    attention_profiles["analysis_estimand"] = analysis_estimand
+    attention_profiles["actual_et1_trt_magnitudes_used"] = False
+    attention_profiles["candidate_support_policy"] = (
+        candidate_support_policy
+    )
+    attention_profiles["candidate_support_policy_label"] = (
+        support_policy_label
+    )
+    attention_profiles["trajectory_attention_skew"] = trajectory_skew
+    add_attention_skew_provenance(
+        attention_profiles,
+        trajectory_skew,
+    )
+    directionality = summarize_directionality(attention_profiles)
+    directionality["display_name"] = directionality["method"].map(
+        {
+            "ob1_attention_profile": reference_profile,
+            **PROFILE_DISPLAY_NAMES,
+        }
+    )
+    directionality["reference_profile"] = reference_profile
+    directionality["analysis_estimand"] = analysis_estimand
+    directionality["actual_et1_trt_magnitudes_used"] = False
+    directionality["candidate_support_policy"] = candidate_support_policy
+    directionality["candidate_support_policy_label"] = (
+        support_policy_label
+    )
+    directionality["profile_component"] = profile_component
+    directionality["fixation_weighting"] = fixation_weighting
+    directionality["trajectory_attention_skew"] = trajectory_skew
+    add_attention_skew_provenance(directionality, trajectory_skew)
+    directionality["rightward_share_scope"] = RIGHTWARD_SHARE_SCOPE
+    reference_mask = directionality["method"].eq(
+        "ob1_attention_profile"
+    )
+    directionality.loc[
+        reference_mask,
+        [
+            "source_accuracy",
+            "learned_sigma_left",
+            "learned_sigma_right",
+            "learned_right_left_ratio",
+            "width_matched_symmetric_sigma",
+        ],
+    ] = np.nan
+    reviewer_summary = build_reviewer_profile_summary(
+        result_table,
+        directionality,
+    )
     return {
         "attention_profiles": attention_profiles,
-        "directionality": summarize_directionality(attention_profiles),
+        "directionality": directionality,
+        "reviewer_summary": reviewer_summary,
         "passage_metrics": passage_metrics,
         "result_table": result_table,
         "contrasts": contrasts,
         "fixed_priors": fixed_prior_records,
         "audit": audit,
     }
+
+
+def build_reviewer_profile_summary(
+    result_table: pd.DataFrame,
+    directionality: pd.DataFrame,
+) -> pd.DataFrame:
+    """Build one explicit reviewer-facing table from profile artifacts."""
+    reported_methods = (
+        "raw_delta",
+        "width_matched_symmetric",
+        "learned_asymmetric",
+    )
+    key_columns = [
+        "checkpoint_id",
+        "ob1_attention_skew",
+        "method",
+    ]
+    direction_columns = [
+        *key_columns,
+        "left_mass",
+        "center_mass",
+        "right_mass",
+        "right_share_of_noncenter_mass",
+    ]
+    candidates = result_table.loc[
+        result_table["method"].isin(reported_methods)
+    ].merge(
+        directionality[direction_columns],
+        on=key_columns,
+        how="left",
+        validate="one_to_one",
+    )
+    candidates["row_role"] = "candidate allocation kernel"
+    references = directionality.loc[
+        directionality["method"].eq("ob1_attention_profile")
+    ].copy()
+    reference_rows = []
+    for reference in references.itertuples():
+        reference_rows.append(
+            {
+                "checkpoint_id": reference.checkpoint_id,
+                "ob1_attention_skew": reference.ob1_attention_skew,
+                "method": reference.method,
+                "display_name": reference.display_name,
+                "passages": result_table.loc[
+                    result_table["checkpoint_id"].eq(
+                        reference.checkpoint_id
+                    )
+                    & result_table["ob1_attention_skew"].eq(
+                        reference.ob1_attention_skew
+                    ),
+                    "passages",
+                ].iloc[0],
+                "source_accuracy": np.nan,
+                "learned_sigma_left": np.nan,
+                "learned_sigma_right": np.nan,
+                "learned_right_left_ratio": np.nan,
+                "width_matched_symmetric_sigma": np.nan,
+                "profile_spearman": np.nan,
+                "profile_spearman_ci_low": np.nan,
+                "profile_spearman_ci_high": np.nan,
+                "js_divergence": np.nan,
+                "js_divergence_ci_low": np.nan,
+                "js_divergence_ci_high": np.nan,
+                "token_offset_wasserstein": np.nan,
+                "token_offset_wasserstein_ci_low": np.nan,
+                "token_offset_wasserstein_ci_high": np.nan,
+                "reference_profile": reference.reference_profile,
+                "analysis_estimand": reference.analysis_estimand,
+                "actual_et1_trt_magnitudes_used": False,
+                "candidate_support_policy": (
+                    reference.candidate_support_policy
+                ),
+                "candidate_support_policy_label": (
+                    reference.candidate_support_policy_label
+                ),
+                "ci_scope": "not applicable: this row is the reference",
+                "profile_component": reference.profile_component,
+                "fixation_weighting": reference.fixation_weighting,
+                "trajectory_attention_skew": (
+                    reference.trajectory_attention_skew
+                ),
+                "requested_skew_matches_trajectory": (
+                    reference.requested_skew_matches_trajectory
+                ),
+                "attention_skew_analysis_role": (
+                    reference.attention_skew_analysis_role
+                ),
+                "left_mass": reference.left_mass,
+                "center_mass": reference.center_mass,
+                "right_mass": reference.right_mass,
+                "right_share_of_noncenter_mass": (
+                    reference.right_share_of_noncenter_mass
+                ),
+                "row_role": "OB1 reference profile",
+            }
+        )
+    combined = pd.concat(
+        [candidates, pd.DataFrame(reference_rows)],
+        ignore_index=True,
+        sort=False,
+    )
+    method_order = {
+        "raw_delta": 0,
+        "width_matched_symmetric": 1,
+        "learned_asymmetric": 2,
+        "ob1_attention_profile": 3,
+    }
+    combined["_method_order"] = combined["method"].map(method_order)
+    combined["rightward_share_scope"] = RIGHTWARD_SHARE_SCOPE
+    return combined.sort_values(
+        [
+            "checkpoint_id",
+            "ob1_attention_skew",
+            "_method_order",
+        ]
+    ).drop(columns="_method_order").reset_index(drop=True)
 
 
 def write_attention_profile_outputs(
@@ -973,6 +1563,10 @@ def write_attention_profile_outputs(
     )
     artifacts["directionality"].to_csv(
         output_dir / "kernel_directionality.csv",
+        index=False,
+    )
+    artifacts["reviewer_summary"].to_csv(
+        output_dir / "reviewer_kernel_summary.csv",
         index=False,
     )
     artifacts["passage_metrics"].to_csv(
@@ -1038,6 +1632,15 @@ def plot_attention_profiles(
 ) -> None:
     """Plot projected OB1 attention and all four token-space kernels."""
     skews = sorted(profiles["ob1_attention_skew"].unique())
+    components = profiles["profile_component"].drop_duplicates().tolist()
+    if len(components) != 1:
+        raise ValueError("Profile plot requires one OB1 profile component")
+    support_policies = profiles[
+        "candidate_support_policy"
+    ].drop_duplicates().tolist()
+    if len(support_policies) != 1:
+        raise ValueError("Profile plot requires one candidate-support policy")
+    reference_label = ob1_reference_display_name(components[0])
     figure, axes = plt.subplots(
         len(skews),
         1,
@@ -1046,7 +1649,7 @@ def plot_attention_profiles(
         squeeze=False,
     )
     series = [
-        ("ob1_attention_profile", "Projected OB1", 2.5),
+        ("ob1_attention_profile", reference_label, 2.5),
         ("raw_delta", PROFILE_DISPLAY_NAMES["raw_delta"], 1.5),
         (
             "width_matched_symmetric",
@@ -1078,7 +1681,10 @@ def plot_attention_profiles(
                 label=label,
             )
         axis.axvline(0, color="black", linewidth=0.8, alpha=0.45)
-        axis.set_title(f"OB1 attention skew = {skew:g}")
+        axis.set_title(
+            f"OB1 attention skew = {skew:g}; candidate support = "
+            f"{support_policies[0]}"
+        )
         axis.set_ylabel("Normalized mass")
         axis.legend(frameon=False, ncol=2)
     axes[-1, 0].set_xlabel("Relative native T5 token offset")
