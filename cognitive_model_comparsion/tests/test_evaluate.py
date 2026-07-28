@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from cognitive_model_comparsion.src.evaluate import (
+    OVERLAP_COMPLEMENTS,
     attach_checkpoint_metadata,
     build_sigma_sweep_summary,
     bootstrap_mean,
@@ -23,6 +24,52 @@ from cognitive_model_comparsion.src.evaluate import (
     summarize_methods_by_checkpoint,
     write_evaluation_outputs,
 )
+
+
+def _with_distribution_metric_fields(row: dict) -> dict:
+    """Complete one synthetic summary row with the new distribution metrics."""
+    completed = dict(row)
+    human_distance = float(completed["js_divergence"])
+    ob1_distance = float(completed["ob1_js_divergence"])
+    completed.update(
+        {
+            "hellinger_distance": human_distance,
+            "total_variation_distance": human_distance,
+            "overlap_coefficient": 1.0 - human_distance,
+            "ob1_hellinger_distance": ob1_distance,
+            "ob1_total_variation_distance": ob1_distance,
+            "ob1_overlap_coefficient": 1.0 - ob1_distance,
+        }
+    )
+    return completed
+
+
+def _with_ob1_distribution_summary_columns(
+    frame: pd.DataFrame,
+) -> pd.DataFrame:
+    """Complete a synthetic OB1 summary table with estimates and intervals."""
+    completed = frame.copy()
+    for metric in (
+        "ob1_hellinger_distance",
+        "ob1_total_variation_distance",
+    ):
+        completed[metric] = completed["ob1_js_divergence"]
+        completed[f"{metric}_ci_low"] = completed[
+            "ob1_js_divergence_ci_low"
+        ]
+        completed[f"{metric}_ci_high"] = completed[
+            "ob1_js_divergence_ci_high"
+        ]
+    completed["ob1_overlap_coefficient"] = (
+        1.0 - completed["ob1_js_divergence"]
+    )
+    completed["ob1_overlap_coefficient_ci_low"] = (
+        1.0 - completed["ob1_js_divergence_ci_high"]
+    )
+    completed["ob1_overlap_coefficient_ci_high"] = (
+        1.0 - completed["ob1_js_divergence_ci_low"]
+    )
+    return completed
 
 
 def _passage_word_values(
@@ -99,8 +146,14 @@ def test_identical_allocations_have_perfect_rank_and_zero_distance():
     assert metrics["human_spearman"] == pytest.approx(1.0)
     assert metrics["ob1_spearman"] == pytest.approx(1.0)
     assert metrics["js_divergence"] == pytest.approx(0.0)
+    assert metrics["hellinger_distance"] == pytest.approx(0.0)
+    assert metrics["total_variation_distance"] == pytest.approx(0.0)
+    assert metrics["overlap_coefficient"] == pytest.approx(1.0)
     assert metrics["word_order_wasserstein"] == pytest.approx(0.0)
     assert metrics["ob1_js_divergence"] == pytest.approx(0.0)
+    assert metrics["ob1_hellinger_distance"] == pytest.approx(0.0)
+    assert metrics["ob1_total_variation_distance"] == pytest.approx(0.0)
+    assert metrics["ob1_overlap_coefficient"] == pytest.approx(1.0)
     assert metrics["ob1_word_order_wasserstein"] == pytest.approx(0.0)
 
 
@@ -111,8 +164,14 @@ def test_ob1_distribution_metrics_use_ob1_instead_of_human_reference():
     metrics = passage_metric_values(human, ob1, ob1)
 
     assert metrics["js_divergence"] == pytest.approx(1.0)
+    assert metrics["hellinger_distance"] == pytest.approx(1.0)
+    assert metrics["total_variation_distance"] == pytest.approx(1.0)
+    assert metrics["overlap_coefficient"] == pytest.approx(0.0)
     assert metrics["word_order_wasserstein"] == pytest.approx(0.5)
     assert metrics["ob1_js_divergence"] == pytest.approx(0.0)
+    assert metrics["ob1_hellinger_distance"] == pytest.approx(0.0)
+    assert metrics["ob1_total_variation_distance"] == pytest.approx(0.0)
+    assert metrics["ob1_overlap_coefficient"] == pytest.approx(1.0)
     assert metrics["ob1_word_order_wasserstein"] == pytest.approx(0.0)
 
 
@@ -157,6 +216,11 @@ def test_js_output_is_divergence_not_scipy_distance():
     metrics = passage_metric_values(human, method, human)
 
     assert metrics["js_divergence"] == pytest.approx(0.31127812445913283)
+    assert metrics["hellinger_distance"] == pytest.approx(
+        np.sqrt(1.0 - np.sqrt(0.5))
+    )
+    assert metrics["total_variation_distance"] == pytest.approx(0.5)
+    assert metrics["overlap_coefficient"] == pytest.approx(0.5)
 
 
 def test_negative_values_are_clipped_only_for_distribution_metrics():
@@ -293,7 +357,7 @@ def test_lower_distance_is_encoded_as_positive_improvement():
     for passage_id in range(3):
         rows.extend(
             [
-                {
+                _with_distribution_metric_fields({
                     "checkpoint_id": "seed",
                     "passage_id_zero_based": passage_id,
                     "method": "et1_raw",
@@ -303,8 +367,8 @@ def test_lower_distance_is_encoded_as_positive_improvement():
                     "ob1_spearman": 0.2,
                     "ob1_js_divergence": 0.4,
                     "ob1_word_order_wasserstein": 0.3,
-                },
-                {
+                }),
+                _with_distribution_metric_fields({
                     "checkpoint_id": "seed",
                     "passage_id_zero_based": passage_id,
                     "method": "et1_asymmetric",
@@ -314,7 +378,7 @@ def test_lower_distance_is_encoded_as_positive_improvement():
                     "ob1_spearman": 0.25,
                     "ob1_js_divergence": 0.1,
                     "ob1_word_order_wasserstein": 0.05,
-                },
+                }),
             ]
         )
     contrasts = paired_contrasts(
@@ -338,8 +402,60 @@ def test_lower_distance_is_encoded_as_positive_improvement():
     assert word_order_distance["mean_paired_improvement"] == pytest.approx(0.2)
     assert ob1_js["mean_paired_improvement"] == pytest.approx(0.3)
     assert ob1_word_order["mean_paired_improvement"] == pytest.approx(0.25)
+    for overlap_metric, distance_metric in OVERLAP_COMPLEMENTS.items():
+        total_variation = contrasts.query(
+            "candidate == 'et1_asymmetric' and metric == @distance_metric"
+        ).iloc[0]
+        overlap = contrasts.query(
+            "candidate == 'et1_asymmetric' and metric == @overlap_metric"
+        ).iloc[0]
+        for column in (
+            "mean_paired_improvement",
+            "ci_low",
+            "ci_high",
+            "permutation_p_two_sided",
+        ):
+            assert overlap[column] == pytest.approx(total_variation[column])
     assert "permutation_p_two_sided" in contrasts
     assert "bootstrap_p_two_sided" not in contrasts
+
+
+def test_overlap_summary_is_exact_complement_of_total_variation():
+    """Derived overlap estimates and intervals exactly complement TV."""
+    rows = []
+    for passage_id, distance in enumerate((0.1, 0.2, 0.5, 0.8)):
+        rows.append(
+            _with_distribution_metric_fields(
+                {
+                    "checkpoint_id": "seed",
+                    "passage_id_zero_based": passage_id,
+                    "method": "et1_raw",
+                    "human_spearman": 0.2,
+                    "js_divergence": distance,
+                    "word_order_wasserstein": distance,
+                    "ob1_spearman": 0.3,
+                    "ob1_js_divergence": distance,
+                    "ob1_word_order_wasserstein": distance,
+                }
+            )
+        )
+
+    summary = summarize_methods(
+        pd.DataFrame(rows),
+        bootstrap_samples=100,
+        seed=13,
+    ).iloc[0]
+
+    for overlap_metric, distance_metric in OVERLAP_COMPLEMENTS.items():
+        assert summary[overlap_metric] == pytest.approx(
+            1.0 - summary[distance_metric]
+        )
+        assert summary[f"{overlap_metric}_ci_low"] == pytest.approx(
+            1.0 - summary[f"{distance_metric}_ci_high"]
+        )
+        assert summary[f"{overlap_metric}_ci_high"] == pytest.approx(
+            1.0 - summary[f"{distance_metric}_ci_low"]
+        )
 
 
 def test_asymmetric_is_directly_compared_with_symmetric():
@@ -348,7 +464,7 @@ def test_asymmetric_is_directly_compared_with_symmetric():
     for passage_id in range(3):
         rows.extend(
             [
-                {
+                _with_distribution_metric_fields({
                     "checkpoint_id": "seed",
                     "passage_id_zero_based": passage_id,
                     "method": "et1_raw",
@@ -358,8 +474,8 @@ def test_asymmetric_is_directly_compared_with_symmetric():
                     "ob1_spearman": 0.1,
                     "ob1_js_divergence": 0.5,
                     "ob1_word_order_wasserstein": 0.4,
-                },
-                {
+                }),
+                _with_distribution_metric_fields({
                     "checkpoint_id": "seed",
                     "passage_id_zero_based": passage_id,
                     "method": "et1_symmetric",
@@ -369,8 +485,8 @@ def test_asymmetric_is_directly_compared_with_symmetric():
                     "ob1_spearman": 0.2,
                     "ob1_js_divergence": 0.4,
                     "ob1_word_order_wasserstein": 0.3,
-                },
-                {
+                }),
+                _with_distribution_metric_fields({
                     "checkpoint_id": "seed",
                     "passage_id_zero_based": passage_id,
                     "method": "et1_asymmetric",
@@ -380,7 +496,7 @@ def test_asymmetric_is_directly_compared_with_symmetric():
                     "ob1_spearman": 0.4,
                     "ob1_js_divergence": 0.2,
                     "ob1_word_order_wasserstein": 0.1,
-                },
+                }),
             ]
         )
 
@@ -404,7 +520,7 @@ def test_checkpoint_summary_keeps_each_rm_seed_separate():
     for checkpoint_id, value in (("seed41", 0.2), ("seed42", 0.4)):
         for passage_id in range(2):
             rows.append(
-                {
+                _with_distribution_metric_fields({
                     "checkpoint_id": checkpoint_id,
                     "passage_id_zero_based": passage_id,
                     "method": "et1_raw",
@@ -414,7 +530,7 @@ def test_checkpoint_summary_keeps_each_rm_seed_separate():
                     "ob1_spearman": 0.3,
                     "ob1_js_divergence": 0.15,
                     "ob1_word_order_wasserstein": 0.25,
-                }
+                })
             )
     summary = summarize_methods_by_checkpoint(
         pd.DataFrame(rows),
@@ -439,7 +555,7 @@ def test_cluster_aware_summary_resamples_whole_clusters():
         (3, "document-b", 0.9),
     ):
         rows.append(
-            {
+            _with_distribution_metric_fields({
                 "checkpoint_id": "seed",
                 "passage_id_zero_based": passage_id,
                 "method": "et1_raw",
@@ -450,7 +566,7 @@ def test_cluster_aware_summary_resamples_whole_clusters():
                 "ob1_spearman": value,
                 "ob1_js_divergence": value,
                 "ob1_word_order_wasserstein": value,
-            }
+            })
         )
 
     summary = summarize_methods(
@@ -466,7 +582,7 @@ def test_cluster_aware_summary_resamples_whole_clusters():
 
 def test_cognitive_tables_keep_only_et1_to_ob1_metrics():
     """Reviewer-facing tables exclude Human metrics and OB1 self-alignment."""
-    method_summary = pd.DataFrame(
+    method_summary = _with_ob1_distribution_summary_columns(pd.DataFrame(
         {
             "method": [
                 "et1_raw",
@@ -502,7 +618,7 @@ def test_cognitive_tables_keep_only_et1_to_ob1_metrics():
             ],
             "human_spearman": [0.1, 0.2, 0.3, 0.4],
         }
-    )
+    ))
     contrasts = pd.DataFrame(
         {
             "candidate": ["et1_asymmetric"] * 4,
@@ -544,7 +660,7 @@ def test_output_writer_emits_separate_cognitive_csvs(tmp_path):
             "human_spearman": [0.5, 0.6],
         }
     )
-    method_summary = pd.DataFrame(
+    method_summary = _with_ob1_distribution_summary_columns(pd.DataFrame(
         {
             "method": ["et1_raw", "ob1"],
             "display_name": ["ET1 raw", "OB1 baseline"],
@@ -559,7 +675,7 @@ def test_output_writer_emits_separate_cognitive_csvs(tmp_path):
             "ob1_word_order_wasserstein_ci_low": [0.05, 0.0],
             "ob1_word_order_wasserstein_ci_high": [0.15, 0.0],
         }
-    )
+    ))
     contrasts = pd.DataFrame(
         [
             {
@@ -975,7 +1091,7 @@ def test_checkpoint_contrasts_and_sweep_summary_keep_all_sigma_pairs():
             ):
                 value = 0.2 + 0.01 * passage_id + offset
                 rows.append(
-                    {
+                    _with_distribution_metric_fields({
                         "checkpoint_id": checkpoint_id,
                         "passage_id_zero_based": passage_id,
                         "method": method,
@@ -985,7 +1101,7 @@ def test_checkpoint_contrasts_and_sweep_summary_keep_all_sigma_pairs():
                         "ob1_spearman": value,
                         "ob1_js_divergence": 1.0 - value,
                         "ob1_word_order_wasserstein": 1.0 - value,
-                    }
+                    })
                 )
     passage_metrics = pd.DataFrame(rows)
     checkpoint_summary = summarize_methods_by_checkpoint(

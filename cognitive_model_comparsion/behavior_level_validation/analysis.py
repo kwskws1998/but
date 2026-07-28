@@ -24,8 +24,14 @@ METHOD_LABELS = {
 SUMMARY_METRICS = {
     "human_spearman": "human_spearman",
     "js_divergence": "human_js_divergence",
+    "hellinger_distance": "human_hellinger_distance",
+    "total_variation_distance": "human_total_variation_distance",
+    "overlap_coefficient": "human_overlap_coefficient",
     "ob1_spearman": "ob1_spearman",
     "ob1_js_divergence": "ob1_js_divergence",
+    "ob1_hellinger_distance": "ob1_hellinger_distance",
+    "ob1_total_variation_distance": "ob1_total_variation_distance",
+    "ob1_overlap_coefficient": "ob1_overlap_coefficient",
 }
 CONTRAST_PAIRS = (
     ("et1_symmetric", "et1_raw"),
@@ -35,14 +41,26 @@ CONTRAST_PAIRS = (
 REFERENCE_LABELS = {
     "human_spearman": "Human Provo conditional TRT",
     "human_js_divergence": "Human Provo conditional TRT",
+    "human_hellinger_distance": "Human Provo conditional TRT",
+    "human_total_variation_distance": "Human Provo conditional TRT",
+    "human_overlap_coefficient": "Human Provo conditional TRT",
     "ob1_spearman": "OB1 simulated TVT",
     "ob1_js_divergence": "OB1 simulated TVT",
+    "ob1_hellinger_distance": "OB1 simulated TVT",
+    "ob1_total_variation_distance": "OB1 simulated TVT",
+    "ob1_overlap_coefficient": "OB1 simulated TVT",
 }
 METRIC_LABELS = {
     "human_spearman": "Human Spearman",
     "human_js_divergence": "Human JS divergence",
+    "human_hellinger_distance": "Human Hellinger distance",
+    "human_total_variation_distance": "Human total variation distance",
+    "human_overlap_coefficient": "Human overlap coefficient",
     "ob1_spearman": "OB1 Spearman",
     "ob1_js_divergence": "OB1 JS divergence",
+    "ob1_hellinger_distance": "OB1 Hellinger distance",
+    "ob1_total_variation_distance": "OB1 total variation distance",
+    "ob1_overlap_coefficient": "OB1 overlap coefficient",
 }
 
 
@@ -162,12 +180,7 @@ def build_behavior_contrast_table(contrasts: pd.DataFrame) -> pd.DataFrame:
             f"Behavior contrasts are missing columns: {missing}"
         )
 
-    metric_renames = {
-        "human_spearman": "human_spearman",
-        "js_divergence": "human_js_divergence",
-        "ob1_spearman": "ob1_spearman",
-        "ob1_js_divergence": "ob1_js_divergence",
-    }
+    metric_renames = SUMMARY_METRICS
     pair_index = {
         pair: index for index, pair in enumerate(CONTRAST_PAIRS)
     }
@@ -265,8 +278,11 @@ def markdown_result_report(
             "",
             "## Human Provo correspondence",
             "",
-            "| Method | Spearman (higher) | JS divergence (lower) |",
-            "|---|---:|---:|",
+            (
+                "| Method | Spearman ↑ | JS ↓ | Hellinger ↓ | "
+                "Total variation ↓ | Overlap ↑ |"
+            ),
+            "|---|---:|---:|---:|---:|---:|",
         ]
     )
     for row in results.itertuples(index=False):
@@ -274,7 +290,10 @@ def markdown_result_report(
         lines.append(
             f"| {series['display_name']} | "
             f"{format_estimate(series, 'human_spearman')} | "
-            f"{format_estimate(series, 'human_js_divergence')} |"
+            f"{format_estimate(series, 'human_js_divergence')} | "
+            f"{format_estimate(series, 'human_hellinger_distance')} | "
+            f"{format_estimate(series, 'human_total_variation_distance')} | "
+            f"{format_estimate(series, 'human_overlap_coefficient')} |"
         )
 
     lines.extend(
@@ -282,8 +301,11 @@ def markdown_result_report(
             "",
             "## OB1 simulated-TVT correspondence",
             "",
-            "| Method | Spearman (higher) | JS divergence (lower) |",
-            "|---|---:|---:|",
+            (
+                "| Method | Spearman ↑ | JS ↓ | Hellinger ↓ | "
+                "Total variation ↓ | Overlap ↑ |"
+            ),
+            "|---|---:|---:|---:|---:|---:|",
         ]
     )
     for row in results.itertuples(index=False):
@@ -291,15 +313,31 @@ def markdown_result_report(
         if series["method"] == "ob1":
             spearman = "-"
             js_divergence = "-"
+            hellinger = "-"
+            total_variation = "-"
+            overlap = "-"
         else:
             spearman = format_estimate(series, "ob1_spearman")
             js_divergence = format_estimate(
                 series,
                 "ob1_js_divergence",
             )
+            hellinger = format_estimate(
+                series,
+                "ob1_hellinger_distance",
+            )
+            total_variation = format_estimate(
+                series,
+                "ob1_total_variation_distance",
+            )
+            overlap = format_estimate(
+                series,
+                "ob1_overlap_coefficient",
+            )
         lines.append(
             f"| {series['display_name']} | {spearman} | "
-            f"{js_divergence} |"
+            f"{js_divergence} | {hellinger} | {total_variation} | "
+            f"{overlap} |"
         )
 
     lines.extend(
@@ -312,8 +350,13 @@ def markdown_result_report(
                 "and word-level OB1 TVT, not unit-impulse kernel profiles."
             ),
             (
-                "- Spearman compares word-rank correspondence. JS divergence "
-                "compares passage-normalized allocation shapes."
+                "- Spearman compares word-rank correspondence. JS, Hellinger, "
+                "total variation, and overlap compare passage-normalized "
+                "allocation shapes."
+            ),
+            (
+                "- Overlap is exactly one minus total variation, so it is an "
+                "interpretive restatement rather than independent evidence."
             ),
             (
                 "- Raw millisecond RMSE is not reported because ET1 predicts "
@@ -397,6 +440,11 @@ def write_behavior_report(
         "primary_metrics": [
             "passage_level_spearman",
             "passage_normalized_jensen_shannon_divergence",
+            "passage_normalized_hellinger_distance",
+            "passage_normalized_total_variation_distance",
+        ],
+        "derived_metrics": [
+            "passage_normalized_overlap_coefficient",
         ],
         "resampling_unit": "passage",
         "source_evaluation_dir": str(evaluation_dir),

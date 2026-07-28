@@ -50,6 +50,9 @@ are instead:
 - passage-level Spearman correlation for relative word ranking;
 - Jensen-Shannon divergence after each passage is normalized to unit
   allocation mass;
+- Hellinger distance and total variation distance on the same normalized
+  allocations;
+- overlap coefficient as the exact complement of total variation distance;
 - paired passage bootstrap intervals for within-passage method differences.
 
 The analysis does not claim absolute TRT calibration, human perceptual-span
@@ -97,8 +100,9 @@ checkpoints.
 
 ## Outputs
 
-- `behavior_result_table.csv`: Human- and OB1-referenced Spearman and JS
-  estimates with passage-bootstrap intervals;
+- `behavior_result_table.csv`: Human- and OB1-referenced Spearman, JS,
+  Hellinger, total variation, and overlap estimates with passage-bootstrap
+  intervals;
 - `behavior_paired_contrasts.csv`: paired raw/symmetric/asymmetric
   improvements without reviewer-facing p-values;
 - `RESULTS.md`: compact display tables and interpretation boundary;

@@ -31,6 +31,25 @@ def rms_scale_symmetric_sigma(
     return math.sqrt((values[0] ** 2 + values[1] ** 2) / 2.0)
 
 
+def sigmas_from_ratio_and_rms_scale(
+    right_left_ratio: float,
+    rms_side_scale: float,
+) -> tuple[float, float]:
+    """Recover side scales with a fixed ratio and fixed side-scale RMS."""
+    ratio = float(right_left_ratio)
+    rms_scale = float(rms_side_scale)
+    if (
+        not math.isfinite(ratio)
+        or ratio <= 0
+        or not math.isfinite(rms_scale)
+        or rms_scale <= 0
+    ):
+        raise ValueError("Ratio and RMS side scale must be finite and positive")
+    sigma_left = rms_scale * math.sqrt(2.0 / (1.0 + ratio**2))
+    sigma_right = ratio * sigma_left
+    return sigma_left, sigma_right
+
+
 def sha256_file(path: Path) -> str:
     """Return the SHA-256 digest of one checkpoint file."""
     digest = hashlib.sha256()

@@ -8,6 +8,7 @@ import torch
 from cognitive_model_comparsion.src.sigmas import (
     direct_sigma_record,
     extract_sigma_record,
+    sigmas_from_ratio_and_rms_scale,
 )
 
 
@@ -98,3 +99,16 @@ def test_direct_effective_sigma_record_reconstructs_production_parameters():
     )
     assert record["symmetric_sigma_source"] == "fixed_independent_control"
     assert record["source_accuracy"] == pytest.approx(0.76675)
+
+
+def test_fixed_ratio_control_preserves_the_declared_rms_side_scale():
+    """The ratio-four control changes directionality without changing RMS."""
+    sigma_left, sigma_right = sigmas_from_ratio_and_rms_scale(4.0, 2.3)
+
+    assert sigma_right / sigma_left == pytest.approx(4.0)
+    assert math.sqrt((sigma_left**2 + sigma_right**2) / 2) == (
+        pytest.approx(2.3)
+    )
+
+    with pytest.raises(ValueError, match="finite and positive"):
+        sigmas_from_ratio_and_rms_scale(0.0, 2.3)

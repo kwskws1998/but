@@ -94,6 +94,11 @@ def test_attention_profile_help_separates_kernel_shape_from_et1_trt():
         ]
     )
     assert default_args.candidate_support_policy == "fixation_matched"
+    assert not default_args.skip_support_rms_displacement_controls
+    assert not default_args.with_sigma_landscape
+    assert default_args.landscape_sigma_min == pytest.approx(0.1)
+    assert default_args.landscape_sigma_max == pytest.approx(5.0)
+    assert default_args.landscape_points == 41
     legacy_args = parser.parse_args(
         [
             "compare-attention-profile",
@@ -114,6 +119,26 @@ def test_attention_profile_help_separates_kernel_shape_from_et1_trt():
         ]
     )
     assert legacy_args.candidate_support_policy == "global"
+
+    skipped_args = parser.parse_args(
+        [
+            "compare-attention-profile",
+            "--sigma-left",
+            "0.4",
+            "--sigma-right",
+            "3.4",
+            "--checkpoint-id",
+            "selected",
+            "--et1-dir",
+            "outputs/et1",
+            "--ob1-dir",
+            "outputs/ob1",
+            "--output-dir",
+            "outputs/attention",
+            "--skip-support-rms-displacement-controls",
+        ]
+    )
+    assert skipped_args.skip_support_rms_displacement_controls
 
 
 def valid_ob1_manifest_inputs():

@@ -12,16 +12,23 @@ from cognitive_model_comparsion.src.attention_profile import (
     PROFILE_ANALYSIS_ESTIMAND,
     PROFILE_CONTRAST_CI_SCOPE,
     PROFILE_DISPLAY_NAMES,
+    PROFILE_DISTRIBUTION_METRIC_SCOPE,
     PROFILE_MEAN_CI_SCOPE,
+    PROFILE_SPEARMAN_SCOPE,
     RIGHTWARD_SHARE_SCOPE,
     build_t5_letter_geometry,
     compare_attention_profiles,
     effective_ob1_attention_width,
+    fit_ob1_gaussian_prior,
     gaussian_weights,
     ob1_reference_display_name,
     ob1_attention_weight,
+    profile_metrics,
     project_ob1_attention_to_t5,
     write_attention_profile_outputs,
+)
+from cognitive_model_comparsion.src.attention_profile_diagnostics import (
+    plot_sigma_landscape,
 )
 
 
@@ -137,8 +144,14 @@ def test_letter_geometry_uses_real_character_offsets():
     assert geometry.loc[3, "punctuation_only_token"]
 
 
-def test_profile_comparison_writes_five_methods_and_checked_prior(tmp_path):
-    """The comparison emits both symmetric controls and a checked prior."""
+def test_profile_comparison_writes_width_direction_and_fit_diagnostics(
+    tmp_path,
+):
+    """The comparison emits width, ratio, direction, and fitted controls."""
+    assert (
+        PROFILE_DISPLAY_NAMES["support_rms_displacement_ratio4"]
+        == "4:1"
+    )
     passages, tokens, fixations = synthetic_profile_inputs()
     artifacts = compare_attention_profiles(
         passages,
@@ -160,9 +173,15 @@ def test_profile_comparison_writes_five_methods_and_checked_prior(tmp_path):
         "raw_delta",
         "fixed_symmetric_sigma1",
         "rms_side_scale_symmetric",
-        "fixed_ob1_gaussian",
+        "fixed_ratio4_same_rms",
+        "support_rms_displacement_symmetric",
+        "support_rms_displacement_ratio4",
+        "mirrored_learned",
         "learned_asymmetric",
     }
+    assert "fixed_ob1_gaussian" in artifacts[
+        "attention_profiles"
+    ].columns
     result_table = artifacts["result_table"]
     assert set(result_table["fixed_symmetric_sigma"]) == {1.0}
     rms_scales = result_table[
@@ -172,6 +191,16 @@ def test_profile_comparison_writes_five_methods_and_checked_prior(tmp_path):
     assert rms_scales.iloc[0] == pytest.approx(
         np.sqrt((0.4**2 + 3.4**2) / 2)
     )
+    ratio4_left = result_table[
+        "fixed_ratio4_same_rms_sigma_left"
+    ].drop_duplicates().iloc[0]
+    ratio4_right = result_table[
+        "fixed_ratio4_same_rms_sigma_right"
+    ].drop_duplicates().iloc[0]
+    assert ratio4_right / ratio4_left == pytest.approx(4.0)
+    assert np.sqrt((ratio4_left**2 + ratio4_right**2) / 2) == (
+        pytest.approx(rms_scales.iloc[0])
+    )
     no_redistribution = result_table.loc[
         result_table["method"].eq("raw_delta")
     ].iloc[0]
@@ -179,12 +208,11 @@ def test_profile_comparison_writes_five_methods_and_checked_prior(tmp_path):
         "No redistribution "
         "(all allocation weight remains at the source token)"
     )
-    fitted = result_table.loc[
-        result_table["method"].eq("fixed_ob1_gaussian")
-    ].iloc[0]
-    assert fitted["display_name"] == (
-        "Descriptive Gaussian fitted to the same OB1 profile"
-    )
+    assert not result_table["method"].eq("fixed_ob1_gaussian").any()
+    assert not (
+        artifacts["contrasts"]["candidate"].eq("fixed_ob1_gaussian")
+        | artifacts["contrasts"]["baseline"].eq("fixed_ob1_gaussian")
+    ).any()
     reference_label = ob1_reference_display_name("focused")
     assert set(result_table["reference_profile"]) == {reference_label}
     assert set(result_table["ci_scope"]) == {PROFILE_MEAN_CI_SCOPE}
@@ -208,6 +236,11 @@ def test_profile_comparison_writes_five_methods_and_checked_prior(tmp_path):
     assert not audit["ob1_simulation_ids_resampled"]
     assert audit["sigma_values_treated_as_fixed"]
     assert audit["rightward_share_scope"] == RIGHTWARD_SHARE_SCOPE
+    assert audit["profile_spearman_scope"] == PROFILE_SPEARMAN_SCOPE
+    assert (
+        audit["distribution_metric_scope"]
+        == PROFILE_DISTRIBUTION_METRIC_SCOPE
+    )
     assert audit["candidate_support_policy"] == "fixation_matched"
     assert audit["candidate_support_policy_is_primary"]
     assert not audit["candidate_support_policy_legacy_sensitivity"]
@@ -217,6 +250,65 @@ def test_profile_comparison_writes_five_methods_and_checked_prior(tmp_path):
         0,
         1,
     }
+    metric_columns = {
+        "profile_spearman",
+        "js_divergence",
+        "hellinger_distance",
+        "total_variation_distance",
+        "overlap_coefficient",
+        "token_offset_wasserstein",
+    }
+    assert metric_columns.issubset(artifacts["passage_metrics"].columns)
+    for metric in metric_columns:
+        assert {
+            metric,
+            f"{metric}_ci_low",
+            f"{metric}_ci_high",
+        }.issubset(result_table.columns)
+    assert set(artifacts["contrasts"]["metric"]) == metric_columns
+    assert result_table["overlap_coefficient"].to_numpy() == pytest.approx(
+        1.0 - result_table["total_variation_distance"].to_numpy()
+    )
+    assert result_table[
+        "overlap_coefficient_ci_low"
+    ].to_numpy() == pytest.approx(
+        1.0 - result_table["total_variation_distance_ci_high"].to_numpy()
+    )
+    assert result_table[
+        "overlap_coefficient_ci_high"
+    ].to_numpy() == pytest.approx(
+        1.0 - result_table["total_variation_distance_ci_low"].to_numpy()
+    )
+    contrast_index = [
+        "checkpoint_id",
+        "ob1_attention_skew",
+        "candidate",
+        "baseline",
+    ]
+    total_variation_contrasts = artifacts["contrasts"].loc[
+        artifacts["contrasts"]["metric"].eq("total_variation_distance")
+    ].set_index(contrast_index)
+    overlap_contrasts = artifacts["contrasts"].loc[
+        artifacts["contrasts"]["metric"].eq("overlap_coefficient")
+    ].set_index(contrast_index)
+    pd.testing.assert_frame_equal(
+        total_variation_contrasts[
+            [
+                "mean_paired_improvement",
+                "ci_low",
+                "ci_high",
+                "permutation_p_two_sided",
+            ]
+        ],
+        overlap_contrasts[
+            [
+                "mean_paired_improvement",
+                "ci_low",
+                "ci_high",
+                "permutation_p_two_sided",
+            ]
+        ],
+    )
     prior = json.loads(
         (tmp_path / "fixed_ob1_priors.json").read_text()
     )[0]
@@ -225,7 +317,11 @@ def test_profile_comparison_writes_five_methods_and_checked_prior(tmp_path):
         "relative_native_t5_token_index"
     )
     assert prior["candidate_support_policy"] == "fixation_matched"
-    assert prior["sigma_right"] > prior["sigma_left"] > 0
+    assert prior["sigma_right"] > 0
+    assert prior["sigma_left"] > 0
+    assert prior["right_left_ratio"] == pytest.approx(
+        prior["sigma_right"] / prior["sigma_left"]
+    )
     assert (
         tmp_path / "kernel_alignment_contrasts.csv"
     ).is_file()
@@ -269,6 +365,10 @@ def test_profile_comparison_writes_five_methods_and_checked_prior(tmp_path):
         "raw_delta",
         "fixed_symmetric_sigma1",
         "rms_side_scale_symmetric",
+        "fixed_ratio4_same_rms",
+        "support_rms_displacement_symmetric",
+        "support_rms_displacement_ratio4",
+        "mirrored_learned",
         "learned_asymmetric",
         "ob1_attention_profile",
     }
@@ -278,6 +378,30 @@ def test_profile_comparison_writes_five_methods_and_checked_prior(tmp_path):
     assert set(reviewer_summary["rightward_share_scope"]) == {
         RIGHTWARD_SHARE_SCOPE
     }
+    assert set(reviewer_summary["profile_spearman_scope"]) == {
+        PROFILE_SPEARMAN_SCOPE
+    }
+    assert set(reviewer_summary["distribution_metric_scope"]) == {
+        PROFILE_DISTRIBUTION_METRIC_SCOPE
+    }
+    candidate_summary = reviewer_summary.loc[
+        reviewer_summary["method"].ne("ob1_attention_profile")
+    ]
+    assert candidate_summary[
+        [
+            "hellinger_distance",
+            "total_variation_distance",
+            "overlap_coefficient",
+        ]
+    ].notna().all().all()
+    for metric in (
+        "hellinger_distance",
+        "total_variation_distance",
+        "overlap_coefficient",
+    ):
+        assert candidate_summary[
+            [metric, f"{metric}_ci_low", f"{metric}_ci_high"]
+        ].notna().all().all()
     assert set(reviewer_summary["candidate_support_policy"]) == {
         "fixation_matched"
     }
@@ -307,6 +431,125 @@ def test_profile_comparison_writes_five_methods_and_checked_prior(tmp_path):
         "formula sensitivity:"
     )
     assert (tmp_path / "kernel_profiles.png").is_file()
+    assert (tmp_path / "kernel_metric_comparison.png").is_file()
+    assert (tmp_path / "kernel_profile_regions.png").is_file()
+    assert (tmp_path / "gaussian_parameter_diagnostics.png").is_file()
+    regions = pd.read_csv(tmp_path / "kernel_profile_regions.csv")
+    assert regions["region_mass_sum"].to_numpy() == pytest.approx(1.0)
+    diagnostics = pd.read_csv(
+        tmp_path / "gaussian_parameter_diagnostics.csv"
+    )
+    assert {
+        "fixed_ratio4_same_rms",
+        "support_rms_displacement_symmetric",
+        "support_rms_displacement_ratio4",
+        "mirrored_learned",
+        "ob1_fit_symmetric",
+        "ob1_fit_ratio4",
+        "ob1_fit_unconstrained",
+    }.issubset(set(diagnostics["model_id"]))
+    diagnostic_index = diagnostics.set_index(
+        ["ob1_attention_skew", "model_id"]
+    )
+    for skew in (3.0, 4.0):
+        learned_displacement = diagnostic_index.loc[
+            (skew, "learned_fixed"),
+            "realized_rms_token_displacement",
+        ]
+        for model_id in (
+            "support_rms_displacement_symmetric",
+            "support_rms_displacement_ratio4",
+        ):
+            assert diagnostic_index.loc[
+                (skew, model_id),
+                "realized_rms_token_displacement",
+            ] == pytest.approx(learned_displacement, rel=1e-7)
+
+
+def test_profile_comparison_can_skip_support_matched_controls(tmp_path):
+    """The sweep option omits support-matched methods and diagnostics."""
+    passages, tokens, fixations = synthetic_profile_inputs()
+    artifacts = compare_attention_profiles(
+        passages,
+        tokens,
+        fixations,
+        {
+            "checkpoint_id": "learned",
+            "sigma_left": 0.4,
+            "sigma_right": 3.4,
+        },
+        attention_skews=(3.0,),
+        bootstrap_samples=20,
+        seed=7,
+        skip_support_rms_displacement_controls=True,
+    )
+    omitted = {
+        "support_rms_displacement_symmetric",
+        "support_rms_displacement_ratio4",
+    }
+
+    assert omitted.isdisjoint(artifacts["attention_profiles"].columns)
+    for key in (
+        "passage_metrics",
+        "result_table",
+        "directionality",
+        "reviewer_summary",
+    ):
+        assert omitted.isdisjoint(set(artifacts[key]["method"]))
+    assert omitted.isdisjoint(
+        set(artifacts["parameter_diagnostics"]["model_id"])
+    )
+    assert omitted.isdisjoint(set(artifacts["contrasts"]["candidate"]))
+    assert omitted.isdisjoint(set(artifacts["contrasts"]["baseline"]))
+    assert not artifacts["audit"][
+        "support_rms_displacement_controls_enabled"
+    ]
+    assert artifacts["audit"]["support_rms_displacement_matches"] == {}
+    write_attention_profile_outputs(tmp_path, artifacts)
+    assert (tmp_path / "kernel_profiles.png").is_file()
+    assert (tmp_path / "kernel_metric_comparison.png").is_file()
+    assert (tmp_path / "kernel_profile_regions.png").is_file()
+    assert (tmp_path / "gaussian_parameter_diagnostics.png").is_file()
+
+
+def test_profile_metrics_exclude_shared_padding_zeros_from_spearman():
+    """Absent offsets do not inflate passage-level rank correspondence."""
+    reference = np.array([0.0, 0.0, 0.6, 0.3, 0.1, 0.0])
+    candidate = np.array([0.0, 0.0, 0.6, 0.1, 0.3, 0.0])
+    support = np.arange(-2, 4)
+
+    metrics = profile_metrics(reference, candidate, support)
+
+    assert metrics["profile_spearman"] == pytest.approx(0.5)
+    assert metrics["hellinger_distance"] > 0
+    assert metrics["total_variation_distance"] == pytest.approx(0.2)
+    assert metrics["overlap_coefficient"] == pytest.approx(0.8)
+
+
+def test_gaussian_mirroring_is_exact_on_balanced_support():
+    """Swapping the side scales mirrors an intrinsic balanced kernel."""
+    support = np.arange(-6, 7)
+    learned = gaussian_weights(support, 0.4, 3.4)
+    mirrored = gaussian_weights(support, 3.4, 0.4)
+
+    assert mirrored == pytest.approx(learned[::-1])
+    assert np.sqrt((0.4**2 + 3.4**2) / 2.0) == pytest.approx(
+        np.sqrt((3.4**2 + 0.4**2) / 2.0)
+    )
+
+
+def test_free_ratio_fit_recovers_leftward_reference_with_bounded_sigmas():
+    """The bounded two-scale fit permits and recovers a ratio below one."""
+    support = np.arange(-8, 9)
+    reference = gaussian_weights(support, 2.5, 0.5)
+
+    fitted = fit_ob1_gaussian_prior(reference, support)
+
+    assert 0.05 <= fitted["sigma_left"] <= 30.0
+    assert 0.05 <= fitted["sigma_right"] <= 30.0
+    assert fitted["right_left_ratio"] < 1.0
+    assert fitted["sigma_left"] == pytest.approx(2.5, rel=1e-4)
+    assert fitted["sigma_right"] == pytest.approx(0.5, rel=1e-4)
 
 
 def test_profile_comparison_does_not_use_et1_trt_magnitudes():
@@ -543,12 +786,18 @@ def test_profile_comparison_sweeps_multiple_sigmas_on_one_ob1_projection(
         "leftward",
     }
     assert len(artifacts["fixed_priors"]) == 1
-    assert len(artifacts["passage_metrics"]) == 20
+    assert len(artifacts["passage_metrics"]) == 32
     assert (
         tmp_path / "kernel_profile_plots/rightward.png"
     ).is_file()
     assert (
         tmp_path / "kernel_profile_plots/leftward.png"
+    ).is_file()
+    assert (
+        tmp_path / "kernel_metric_plots/rightward.png"
+    ).is_file()
+    assert (
+        tmp_path / "kernel_region_plots/leftward.png"
     ).is_file()
     directionality = artifacts["directionality"]
     rightward = directionality.query(
@@ -561,3 +810,58 @@ def test_profile_comparison_sweeps_multiple_sigmas_on_one_ob1_projection(
     ).iloc[0]
     assert rightward["right_mass"] > rightward["left_mass"]
     assert leftward["right_mass"] < leftward["left_mass"]
+
+
+def test_sigma_landscape_writes_every_metric_and_landmark(tmp_path):
+    """The optional landscape is exhaustive, finite, and visibly annotated."""
+    passages, tokens, fixations = synthetic_profile_inputs()
+    artifacts = compare_attention_profiles(
+        passages,
+        tokens,
+        fixations,
+        {
+            "checkpoint_id": "learned",
+            "sigma_left": 0.4,
+            "sigma_right": 3.4,
+        },
+        attention_skews=(3.0, 4.0),
+        bootstrap_samples=100,
+        seed=7,
+        landscape_sigma_values=np.geomspace(0.05, 30.0, 3),
+    )
+    write_attention_profile_outputs(tmp_path, artifacts)
+
+    landscape = artifacts["sigma_landscape"]
+    assert len(landscape) == 2 * 3 * 3
+    assert artifacts["audit"]["sigma_landscape_min"] == pytest.approx(0.05)
+    assert artifacts["audit"]["sigma_landscape_max"] == pytest.approx(30.0)
+    assert artifacts["audit"]["sigma_landscape_points"] == 3
+    metric_columns = [
+        "profile_spearman",
+        "js_divergence",
+        "hellinger_distance",
+        "total_variation_distance",
+        "overlap_coefficient",
+        "token_offset_wasserstein",
+    ]
+    assert np.isfinite(landscape[metric_columns].to_numpy()).all()
+    assert landscape["overlap_coefficient"].to_numpy() == pytest.approx(
+        1.0 - landscape["total_variation_distance"].to_numpy()
+    )
+    assert (tmp_path / "sigma_landscape.csv").is_file()
+    assert (tmp_path / "sigma_landscape_skew_3.png").is_file()
+    assert (tmp_path / "sigma_landscape_skew_4.png").is_file()
+
+    outside = artifacts["parameter_diagnostics"].copy()
+    marked_index = outside["landscape_marker"].notna().idxmax()
+    outside.loc[marked_index, "sigma_right"] = 31.0
+    with pytest.raises(
+        ValueError,
+        match="does not contain every plotted landmark",
+    ):
+        plot_sigma_landscape(
+            landscape,
+            outside,
+            tmp_path / "invalid_landscape",
+            "learned",
+        )

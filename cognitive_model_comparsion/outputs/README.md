@@ -29,15 +29,37 @@ Running `compare-attention-profile` over saved ET1 and OB1 outputs writes:
 - `kernel_alignment_by_passage.csv`;
 - `kernel_alignment_result_table.csv`;
 - `kernel_alignment_contrasts.csv`;
+- `kernel_profile_regions.csv` and `kernel_profile_regions.png`;
+- `kernel_metric_comparison.png`;
+- `gaussian_parameter_diagnostics.csv` and
+  `gaussian_parameter_diagnostics.png`;
+- optional `sigma_landscape.csv` plus one four-metric reviewer-facing heatmap
+  per OB1 skew when `--with-sigma-landscape` is passed;
 - `reviewer_kernel_summary.csv`, with explicit candidate/reference labels and
   rightward-share values;
 - `fixed_ob1_priors.json`;
 - `attention_profile_audit.json`;
 - the copied `checkpoint_sigmas.json` and `.csv`.
 
-The attention-profile tables keep the two symmetric conditions separate:
+The attention-profile tables keep width and direction controls separate:
 `fixed_symmetric_sigma1` uses `(1.0, 1.0)`, whereas
 `rms_side_scale_symmetric` uses the learned side-scale RMS on both sides.
+`fixed_ratio4_same_rms` holds that parameter RMS fixed and imposes the
+paper-stated 4:1 ratio. It does not guarantee equal realized variance after
+support truncation. `mirrored_learned` swaps the two learned sigmas, preserving
+their parameter count and RMS as a parameter-level direction reversal; its
+pooled profile is not an exact mirror on right-heavy visible support.
+`support_rms_displacement_symmetric` and
+`support_rms_displacement_ratio4` instead solve their scale so that pooled
+`sqrt(sum_d p(d) * d^2)` exactly matches the frozen learned kernel on the same
+fixation-visible supports. These are post-hoc contextual spread ablations and
+do not use OB1 attention weights.
+The tables report JS divergence, Hellinger distance, total variation distance,
+overlap coefficient, and supplemental token-offset Wasserstein on the complete
+normalized profiles. Reviewer-facing figures show Spearman, JS, Hellinger, and
+TV; overlap is exactly `1-TV` and Wasserstein remains supplemental. Spearman
+alone excludes offsets that are zero in both passage-level profiles so absent,
+globally padded positions cannot inflate tied ranks.
 
 Every kernel-profile table and audit records `candidate_support_policy`.
 `fixation_matched` is primary: candidate and OB1 profiles are normalized on the
@@ -65,11 +87,11 @@ the cached 100-simulation fixation table with
 `--candidate-support-policy fixation_matched`; no corrected values are recorded
 here until those files are inspected.
 
-`result_table.csv` reports `human_spearman`, `js_divergence`,
-`word_order_wasserstein`, `ob1_spearman`, `ob1_js_divergence`, and
-`ob1_word_order_wasserstein` with percentile 95% confidence intervals. The
-unprefixed JS and Wasserstein columns use Human TRT as their reference; the
-`ob1_`-prefixed columns use OB1 TVT.
+`result_table.csv` reports Human- and OB1-referenced Spearman, JS divergence,
+Hellinger distance, total variation distance, overlap coefficient, and
+word-order Wasserstein with percentile 95% confidence intervals. Unprefixed
+distribution columns use Human TRT as their reference; `ob1_`-prefixed columns
+use OB1 TVT.
 
 `cognitive_result_table.csv` contains only ET1 raw, symmetric, and asymmetric
 alignment to OB1, excluding the trivial OB1 self-comparison.
@@ -77,6 +99,9 @@ alignment to OB1, excluding the trivial OB1 self-comparison.
 
 - `ob1_spearman`, where higher is better;
 - `ob1_js_divergence`, where lower is better;
+- `ob1_hellinger_distance`, where lower is better;
+- `ob1_total_variation_distance`, where lower is better;
+- `ob1_overlap_coefficient`, where higher is better;
 - `ob1_word_order_wasserstein`, where lower is better.
 
 Both Wasserstein columns measure transport along normalized word order, not

@@ -28,11 +28,19 @@ def summary_fixture() -> pd.DataFrame:
             "display_name": method,
             "passages": 55,
         }
+        js_value = 0.4 - index / 20
+        ob1_js_value = 0.3 - index / 20
         for metric, value in {
             "human_spearman": 0.1 + index / 10,
-            "js_divergence": 0.4 - index / 20,
+            "js_divergence": js_value,
+            "hellinger_distance": js_value,
+            "total_variation_distance": js_value,
+            "overlap_coefficient": 1.0 - js_value,
             "ob1_spearman": 0.2 + index / 10,
-            "ob1_js_divergence": 0.3 - index / 20,
+            "ob1_js_divergence": ob1_js_value,
+            "ob1_hellinger_distance": ob1_js_value,
+            "ob1_total_variation_distance": ob1_js_value,
+            "ob1_overlap_coefficient": 1.0 - ob1_js_value,
         }.items():
             record[metric] = value
             record[f"{metric}_ci_low"] = value - 0.01
@@ -52,8 +60,14 @@ def contrast_fixture() -> pd.DataFrame:
         for metric in (
             "human_spearman",
             "js_divergence",
+            "hellinger_distance",
+            "total_variation_distance",
+            "overlap_coefficient",
             "ob1_spearman",
             "ob1_js_divergence",
+            "ob1_hellinger_distance",
+            "ob1_total_variation_distance",
+            "ob1_overlap_coefficient",
         ):
             records.append(
                 {
@@ -112,15 +126,21 @@ def test_behavior_result_table_uses_expected_methods_and_metrics():
     assert result["method"].tolist() == list(METHOD_ORDER)
     assert "human_js_divergence" in result
     assert "ob1_js_divergence" in result
+    assert "human_hellinger_distance" in result
+    assert "ob1_total_variation_distance" in result
+    assert "ob1_overlap_coefficient" in result
     assert "word_order_wasserstein" not in result
 
 
 def test_behavior_contrasts_omit_pvalues_and_normalize_metric_names():
     """Keep paired effect estimates while omitting reviewer-facing p-values."""
     result = build_behavior_contrast_table(contrast_fixture())
-    assert len(result) == 12
+    assert len(result) == 30
     assert "permutation_p_two_sided" not in result
     assert "human_js_divergence" in set(result["metric"])
+    assert "ob1_hellinger_distance" in set(result["metric"])
+    assert "human_total_variation_distance" in set(result["metric"])
+    assert "ob1_overlap_coefficient" in set(result["metric"])
     assert result["positive_means_improvement"].all()
 
 
@@ -148,6 +168,12 @@ def test_write_behavior_report_records_actual_et1_scope(tmp_path):
     assert audit["actual_passage_specific_et1_values_used"] is True
     assert audit["unit_impulse_kernel_profiles_used"] is False
     assert audit["raw_millisecond_rmse_computed"] is False
+    assert "passage_normalized_overlap_coefficient" in audit[
+        "derived_metrics"
+    ]
+    assert "passage_normalized_overlap_coefficient" not in audit[
+        "primary_metrics"
+    ]
 
 
 def test_checkpoint_selection_refuses_implicit_sweep_average():

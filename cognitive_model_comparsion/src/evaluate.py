@@ -12,6 +12,10 @@ import pandas as pd
 from scipy.spatial.distance import jensenshannon
 from scipy.stats import spearmanr, wasserstein_distance
 
+from cognitive_model_comparsion.src.distribution_metrics import (
+    distribution_similarity_metrics,
+)
+
 
 METHOD_COLUMNS = {
     "et1_raw": "et1_raw_word_trt",
@@ -37,17 +41,43 @@ OB1_CLEAN_PASSAGE_POLICY = (
 HUMAN_METRIC_DIRECTIONS = {
     "human_spearman": "higher",
     "js_divergence": "lower",
+    "hellinger_distance": "lower",
+    "total_variation_distance": "lower",
+    "overlap_coefficient": "higher",
     "word_order_wasserstein": "lower",
 }
 COGNITIVE_METRIC_DIRECTIONS = {
     "ob1_spearman": "higher",
     "ob1_js_divergence": "lower",
+    "ob1_hellinger_distance": "lower",
+    "ob1_total_variation_distance": "lower",
+    "ob1_overlap_coefficient": "higher",
     "ob1_word_order_wasserstein": "lower",
 }
 METRIC_DIRECTIONS = {
     **HUMAN_METRIC_DIRECTIONS,
     **COGNITIVE_METRIC_DIRECTIONS,
 }
+OVERLAP_COMPLEMENTS = {
+    "overlap_coefficient": "total_variation_distance",
+    "ob1_overlap_coefficient": "ob1_total_variation_distance",
+}
+INFERENTIAL_METRIC_DIRECTIONS = {
+    metric: direction
+    for metric, direction in METRIC_DIRECTIONS.items()
+    if metric not in OVERLAP_COMPLEMENTS
+}
+BEHAVIOR_DISTRIBUTION_METRIC_SCOPE = (
+    "Jensen-Shannon divergence, Hellinger distance, and total variation "
+    "distance are computed on complete normalized passage-level word "
+    "allocations; overlap coefficient and its intervals are derived exactly "
+    "as one minus total variation distance"
+)
+BEHAVIOR_SPEARMAN_SCOPE = (
+    "Spearman correlation over every common evaluated word position; zero "
+    "Human or OB1 values are observed no-dwell or skipped-word allocations, "
+    "not structural padding"
+)
 
 
 def normalized_allocation(values: np.ndarray) -> tuple[np.ndarray, int]:
@@ -108,6 +138,14 @@ def passage_metric_values(
     ob1_spearman = float(spearmanr(ob1, method).statistic)
     if not np.isfinite(human_spearman) or not np.isfinite(ob1_spearman):
         raise ValueError("Spearman correlation is undefined for a passage")
+    human_distribution_metrics = distribution_similarity_metrics(
+        human_distribution,
+        method_distribution,
+    )
+    ob1_distribution_metrics = distribution_similarity_metrics(
+        ob1_distribution,
+        method_distribution,
+    )
     return {
         "human_spearman": human_spearman,
         "js_divergence": float(
@@ -118,6 +156,7 @@ def passage_metric_values(
             )
             ** 2
         ),
+        **human_distribution_metrics,
         "word_order_wasserstein": float(
             wasserstein_distance(
                 positions,
@@ -135,6 +174,15 @@ def passage_metric_values(
             )
             ** 2
         ),
+        "ob1_hellinger_distance": ob1_distribution_metrics[
+            "hellinger_distance"
+        ],
+        "ob1_total_variation_distance": ob1_distribution_metrics[
+            "total_variation_distance"
+        ],
+        "ob1_overlap_coefficient": ob1_distribution_metrics[
+            "overlap_coefficient"
+        ],
         "ob1_word_order_wasserstein": float(
             wasserstein_distance(
                 positions,
@@ -633,7 +681,7 @@ def summarize_methods(
     cluster_column: str | None = None,
 ) -> pd.DataFrame:
     """Average RM seeds within passage and bootstrap method-level means."""
-    metric_columns = list(METRIC_DIRECTIONS)
+    metric_columns = list(INFERENTIAL_METRIC_DIRECTIONS)
     per_passage = (
         passage_metrics.groupby(
             ["method", "passage_id_zero_based"],
@@ -668,7 +716,7 @@ def summarize_methods(
         )
         if clusters is not None:
             record["clusters"] = int(pd.Series(clusters).nunique())
-        for metric in metric_columns:
+        for metric in INFERENTIAL_METRIC_DIRECTIONS:
             mean, lower, upper = bootstrap_mean(
                 group[metric].to_numpy(),
                 bootstrap_samples,
@@ -678,6 +726,14 @@ def summarize_methods(
             record[metric] = mean
             record[f"{metric}_ci_low"] = lower
             record[f"{metric}_ci_high"] = upper
+        for overlap_metric, distance_metric in OVERLAP_COMPLEMENTS.items():
+            record[overlap_metric] = 1.0 - record[distance_metric]
+            record[f"{overlap_metric}_ci_low"] = (
+                1.0 - record[f"{distance_metric}_ci_high"]
+            )
+            record[f"{overlap_metric}_ci_high"] = (
+                1.0 - record[f"{distance_metric}_ci_low"]
+            )
         records.append(record)
     return pd.DataFrame(records)
 
@@ -713,7 +769,7 @@ def paired_contrasts(
     cluster_column: str | None = None,
 ) -> pd.DataFrame:
     """Bootstrap paired intervals and sign-flip tests for improvements."""
-    metric_directions = METRIC_DIRECTIONS
+    metric_directions = INFERENTIAL_METRIC_DIRECTIONS
     per_passage = (
         passage_metrics.groupby(
             ["method", "passage_id_zero_based"],
@@ -794,6 +850,19 @@ def paired_contrasts(
             if clusters is not None:
                 record["clusters"] = int(pd.Series(clusters).nunique())
             records.append(record)
+            derived_metric = next(
+                (
+                    overlap_metric
+                    for overlap_metric, distance_metric
+                    in OVERLAP_COMPLEMENTS.items()
+                    if distance_metric == metric
+                ),
+                None,
+            )
+            if derived_metric is not None:
+                derived_record = dict(record)
+                derived_record["metric"] = derived_metric
+                records.append(derived_record)
     return pd.DataFrame(records)
 
 

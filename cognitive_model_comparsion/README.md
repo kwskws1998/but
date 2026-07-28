@@ -28,8 +28,10 @@ The directory name intentionally preserves the requested spelling:
 - frozen ET1 inference using the pinned native T5 tokenizer;
 - paper-faithful ET1 word mapping: sum all native T5-token TRT values assigned
   by character offsets to each whitespace word;
-- fixed sigma-one symmetric, RMS-of-side-scales symmetric, and learned
-  asymmetric redistribution using the production `AsymGaussianRedistributor`;
+- fixed sigma-one symmetric, quadratic-side-scale-RMS controls,
+  support-conditioned RMS-token-displacement-matched symmetric and fixed 4:1
+  controls, mirrored-learned, and learned asymmetric redistribution using the
+  production `AsymGaussianRedistributor`;
 - the production-faithful primary mask, which includes the T5 EOS position
   during redistribution, plus a requested special-token-excluded sensitivity;
 - per-passage mass audits before and after redistribution, including
@@ -43,23 +45,30 @@ The directory name intentionally preserves the requested spelling:
   former global-support calculation retained only as a legacy sensitivity;
 - direct comparison of a no-redistribution impulse, a fixed SymGaussian with
   `sigma_left=sigma_right=1.0`, an RMS-of-side-scales symmetric diagnostic, a
-  descriptive Gaussian fitted to the same OB1 profile, and the
-  OASST1-learned asymmetric kernel;
+  fixed 4:1 same-parameter-RMS diagnostic, symmetric and 4:1 controls matched
+  to the learned kernel's realized RMS token displacement, a parameter-level
+  direction-reversed learned kernel, a
+  descriptive Gaussian fitted to the same OB1 profile, and the OASST1-learned
+  asymmetric kernel;
 - passage-level Human-referenced and OB1-referenced Spearman,
-  Jensen–Shannon divergence, and `word_order_wasserstein`;
+  Jensen–Shannon divergence, Hellinger distance, total variation distance,
+  overlap coefficient, and `word_order_wasserstein`;
 - percentile 95% passage-bootstrap confidence intervals for method means,
   paired passage-bootstrap confidence intervals for within-passage method
   differences, and two-sided paired sign-flip tests; OB1 simulations are pooled
   before these passage-level resampling procedures;
 - descriptive rightward-share point estimates from pooled offset profiles,
   without bootstrap confidence intervals;
+- metric-by-metric confidence-interval plots, exhaustive center/near-right/
+  distant-right mass plots, constrained Gaussian-fit diagnostics, and an
+  optional two-dimensional `sigma_left` by `sigma_right` landscape;
 - passage-level resampling for Provo and article-cluster resampling over the 30
   OneStop articles;
 - optional OneStop clean-passage sensitivity restricted to 107 paragraphs
   with no punctuation-only OB1 token transformation;
-- one Python CLI for setup, component runs, and complete experiments.
-
-No `.sh` file or `gdown` is used.
+- one Python CLI for setup, component runs, and complete experiments;
+- separate Python entry points for environment setup, experiment generation,
+  and analysis-only reruns. No shell wrapper or `gdown` is used.
 
 ## Recommended Provo rebuttal route
 
@@ -85,8 +94,10 @@ The analysis has two complementary parts:
    Human TRT and OB1 TVT results.
 2. `compare-attention-profile` reconstructs OB1's fixation-onset letter
    attention from the saved 100-simulation fixation table, projects it onto
-   native T5 relative-token offsets, and compares four kernels:
+   native T5 relative-token offsets, and compares nine kernels:
    `raw_delta`, `fixed_symmetric_sigma1`, `rms_side_scale_symmetric`,
+   `fixed_ratio4_same_rms`, `support_rms_displacement_symmetric`,
+   `support_rms_displacement_ratio4`, `mirrored_learned`,
    `fixed_ob1_gaussian`, and `learned_asymmetric`.
 
 The isolated
@@ -115,6 +126,12 @@ after this support correction. The cached 100-simulation post-processing below
 must be rerun with `fixation_matched`; this repository does not claim new
 100-simulation values before that rerun is inspected.
 
+Passage-level kernel-profile Spearman excludes relative-token offsets that
+have zero mass in both OB1 and the candidate. Those positions are absent from
+that passage rather than shared observations; including their tied zero ranks
+inflates correlation. Distribution metrics retain the complete normalized
+profile because shared zero bins contribute exactly zero distance.
+
 The projection replays the vendored implementation, including its actual
 `n-1 ... n+3` stimulus window, the post-update attention width, fixation
 position, and punctuation-aware T5 character offsets. The primary `focused`
@@ -132,6 +149,73 @@ fixation geometries using the original-paper setting; it does not pretend that
 OB1 trajectories were rerun under a second parameter value. Use `skew=3` for
 the optional fixed-prior RM baseline and report `skew=4` as a formula-level
 sensitivity.
+
+### What OB1 skew does and does not mean
+
+The original OB1 paper states, word for word:
+
+> “Asym is equal to 1 toward the right and 0.25 toward the left”
+
+and describes:
+
+> “the standard deviation of the Gaussian functioning as a changeable width”
+
+Source: [Snell et al. (2018), p. 973](https://research.vu.nl/ws/portalfiles/portal/72578613/OB1_reader_A_model_of_word_recognition_and_eye_movements_in_text_reading.pdf).
+
+Accordingly, the focused letter-coordinate component implemented in the
+vendored code has
+
+\[
+\sigma_R^{letter}=width,\qquad
+\sigma_L^{letter}=\frac{width}{attention\_skew}.
+\]
+
+Thus `attention_skew=4` is a 4:1 side-scale ratio at one fixation in letter
+coordinates, while the released Provo implementation uses `attention_skew=3`.
+It is not a statement that a single Gaussian fitted after variable-length T5
+token projection, fixation-window truncation, per-fixation normalization, and
+cross-fixation pooling must have `sigma_right/sigma_left=4`.
+
+The frozen learned kernel is parameterized separately by
+
+\[
+r=\frac{\sigma_R}{\sigma_L},\qquad
+w=\sqrt{\frac{\sigma_L^2+\sigma_R^2}{2}}.
+\]
+
+For a fixed ratio \(r\) and side-scale RMS \(w\), the diagnostic controls use
+
+\[
+\sigma_L=w\sqrt{\frac{2}{1+r^2}},\qquad
+\sigma_R=r\sigma_L.
+\]
+
+This produces a symmetric same-quadratic-side-scale-RMS control, a fixed 4:1
+control at that same parameter RMS, and the original learned kernel while
+holding \(w\) constant. This does not guarantee equal realized distributional
+variance after fixation-support truncation and normalization. Swapping the
+learned left and right sigmas produces a parameter-level direction reversal;
+because the visible support is right-heavy, its pooled output is not an exact
+left-right mirror. These controls do not fit a parameter to the current Provo
+OB1 profile. The 4:1 ratio is specified a priori from the paper-stated OB1
+asymmetry, while its RMS is inherited from the frozen learned kernel. By
+contrast, all rows named `ob1_fit_*` and `fixed_ob1_gaussian` are explicitly
+in-sample, descriptive fits to the same projected OB1 profile. They are
+excluded from passage-bootstrap confidence intervals and paired significance
+tests and are not validation results.
+
+The stricter support-conditioned spread controls solve their scale so that
+
+\[
+\sqrt{\sum_d p(d)d^2}
+\]
+
+exactly matches the frozen learned kernel after normalization on the pooled
+fixation-visible token supports. This controls realized RMS displacement from
+the source token, rather than merely a norm of the two sigma parameters. It
+does not use OB1 attention weights, but it does use the evaluation fixation
+supports, so it is a post-hoc contextual ablation rather than an independent
+psychophysical prior.
 
 ### Reuse the completed Provo 100-simulation output
 
@@ -293,6 +377,7 @@ CUDA_VISIBLE_DEVICES=0 /venv/cognitive/bin/python \
   --fixation-weighting duration \
   --profile-component focused \
   --candidate-support-policy fixation_matched \
+  --skip-support-rms-displacement-controls \
   --bootstrap-samples 10000 \
   --seed 20260725 \
   --output-dir "$SWEEP_RUN/attention_profile_focused"
@@ -308,6 +393,7 @@ CUDA_VISIBLE_DEVICES=0 /venv/cognitive/bin/python \
   --fixation-weighting duration \
   --profile-component full \
   --candidate-support-policy fixation_matched \
+  --skip-support-rms-displacement-controls \
   --bootstrap-samples 10000 \
   --seed 20260725 \
   --output-dir "$SWEEP_RUN/attention_profile_full_sensitivity"
@@ -323,6 +409,7 @@ CUDA_VISIBLE_DEVICES=0 /venv/cognitive/bin/python \
   --fixation-weighting equal \
   --profile-component focused \
   --candidate-support-policy fixation_matched \
+  --skip-support-rms-displacement-controls \
   --bootstrap-samples 10000 \
   --seed 20260725 \
   --output-dir "$SWEEP_RUN/attention_profile_equal_fixation_sensitivity"
@@ -374,10 +461,10 @@ legacy `global` output is a support sensitivity and cannot substitute for the
 primary table.
 
 Do not replace “directional correspondence” with “Human perceptual-span
-estimation,” and do not claim universal superiority if one of Spearman, JS, or
-Wasserstein disagrees. The fixed OB1 Gaussian is fitted to the same projected
-OB1 profile, so its OB1-alignment row is a descriptive reference rather than a
-held-out validation result.
+estimation,” and do not claim universal superiority when rank and complete-mass
+metrics disagree. The fixed OB1 Gaussian is fitted to the same projected OB1
+profile, so it is retained only as a descriptive profile/parameter diagnostic,
+not as an inferential or held-out validation row.
 
 ### Optional fixed-prior RM baseline
 
@@ -459,6 +546,20 @@ python cognitive_model_comparsion/main.py audit --corpus onestop
 
 python -m pytest -q cognitive_model_comparsion/tests
 ```
+
+The same workflow is split into three executable entry points:
+
+```bash
+python cognitive_model_comparsion/scripts/setup_provo_environment.py
+python cognitive_model_comparsion/scripts/run_provo_experiment.py
+python cognitive_model_comparsion/scripts/run_provo_attention_analysis.py
+```
+
+The first script creates the isolated environment and verifies dependencies
+and assets. The second generates the native T5 geometry and OB1 trajectories.
+The third reads those saved artifacts, computes all measures, and creates the
+profile, region, metric, constrained-fit, and sigma-landscape figures without
+rerunning either model.
 
 `setup --corpus onestop` downloads the official 169 MiB Ordinary Interest Area
 ZIP, the pinned OB1 source, SUBTLEX-UK, the public ET1 checkpoint, and the
@@ -646,6 +747,9 @@ each passage:
 
 - Human Spearman: rank correspondence with participant-averaged TRT;
 - JS divergence: shape difference between unit-normalized allocations;
+- Hellinger distance: bounded symmetric shape distance, lower is better;
+- total variation distance: non-overlapping allocation mass, lower is better;
+- overlap coefficient: `1 - total_variation_distance`, higher is better;
 - word-order Wasserstein: transport distance along normalized word order,
   not a fixation-coordinate or scanpath metric;
 - OB1 Spearman: rank correspondence with OB1 simulated TVT.
@@ -658,8 +762,20 @@ metrics are:
 - `ob1_spearman`: rank correspondence with OB1 TVT, higher is better;
 - `ob1_js_divergence`: divergence between normalized method and OB1
   allocation, lower is better;
+- `ob1_hellinger_distance`: bounded symmetric distance between normalized
+  method and OB1 allocation, lower is better;
+- `ob1_total_variation_distance`: non-overlapping normalized allocation mass,
+  lower is better;
+- `ob1_overlap_coefficient`: `1 - ob1_total_variation_distance`, higher is
+  better;
 - `ob1_word_order_wasserstein`: transport distance between normalized method
   and OB1 allocation along normalized word order, lower is better.
+
+The kernel-profile outputs use the analogous unprefixed
+`hellinger_distance`, `total_variation_distance`, and `overlap_coefficient`
+columns. Hellinger and total variation are inferential distance metrics;
+overlap is retained as the exactly equivalent, reviewer-readable similarity
+scale `1 - total_variation_distance`.
 
 `result_table.csv` reports method means and percentile 95% intervals.
 `bootstrap_summary.csv` reports paired improvements, percentile 95% intervals,

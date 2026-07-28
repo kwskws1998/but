@@ -11,10 +11,22 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
-from scipy.optimize import minimize
+from scipy.optimize import minimize, minimize_scalar
 from scipy.spatial.distance import jensenshannon
 from scipy.stats import spearmanr, wasserstein_distance
 
+from cognitive_model_comparsion.src.attention_profile_diagnostics import (
+    build_sigma_landscape,
+    plot_metric_comparison,
+    plot_parameter_diagnostics,
+    plot_profile_regions,
+    plot_sigma_landscape,
+    safe_identifier,
+    summarize_profile_regions,
+)
+from cognitive_model_comparsion.src.distribution_metrics import (
+    distribution_similarity_metrics,
+)
 from cognitive_model_comparsion.src.evaluate import (
     bootstrap_mean,
     paired_sign_flip_pvalue,
@@ -22,14 +34,37 @@ from cognitive_model_comparsion.src.evaluate import (
 from cognitive_model_comparsion.src.sigmas import (
     FIXED_SYMMETRIC_SIGMA,
     rms_scale_symmetric_sigma,
+    sigmas_from_ratio_and_rms_scale,
 )
 
 
+FIXED_PSYCHOPHYSICAL_RATIO = 4.0
 PROFILE_METHODS = (
     "raw_delta",
     "fixed_symmetric_sigma1",
     "rms_side_scale_symmetric",
+    "fixed_ratio4_same_rms",
+    "support_rms_displacement_symmetric",
+    "support_rms_displacement_ratio4",
+    "mirrored_learned",
     "fixed_ob1_gaussian",
+    "learned_asymmetric",
+)
+SUPPORT_RMS_DISPLACEMENT_METHODS = (
+    "support_rms_displacement_symmetric",
+    "support_rms_displacement_ratio4",
+)
+INFERENTIAL_PROFILE_METHODS = tuple(
+    method
+    for method in PROFILE_METHODS
+    if method != "fixed_ob1_gaussian"
+)
+REVIEWER_PLOT_METHODS = (
+    "raw_delta",
+    "fixed_symmetric_sigma1",
+    "support_rms_displacement_symmetric",
+    "support_rms_displacement_ratio4",
+    "mirrored_learned",
     "learned_asymmetric",
 )
 PROFILE_DISPLAY_NAMES = {
@@ -42,26 +77,67 @@ PROFILE_DISPLAY_NAMES = {
         "(sigma_left=sigma_right=1.0)"
     ),
     "rms_side_scale_symmetric": (
-        "RMS-of-side-scales symmetric redistribution"
+        "Symmetric redistribution at the learned kernel's quadratic "
+        "side-scale RMS"
+    ),
+    "fixed_ratio4_same_rms": (
+        "Fixed 4:1 Gaussian at the learned kernel's quadratic "
+        "side-scale RMS"
+    ),
+    "support_rms_displacement_symmetric": (
+        "Symmetric Gaussian matched to the learned kernel's realized RMS "
+        "token displacement on the pooled fixation support"
+    ),
+    "support_rms_displacement_ratio4": (
+        "4:1"
+    ),
+    "mirrored_learned": (
+        "Learned side scales exchanged as a parameter-level direction "
+        "reversal under the same fixation-conditioned support"
     ),
     "fixed_ob1_gaussian": (
         "Descriptive Gaussian fitted to the same OB1 profile"
     ),
     "learned_asymmetric": "Learned asymmetric redistribution kernel",
 }
+PROFILE_SHORT_DISPLAY_NAMES = {
+    "ob1_attention_profile": "OB1 attention",
+    "raw_delta": "No redistribution",
+    "fixed_symmetric_sigma1": "Symmetric σ=1",
+    "rms_side_scale_symmetric": "Symmetric, parameter RMS",
+    "fixed_ratio4_same_rms": "4:1, parameter RMS",
+    "support_rms_displacement_symmetric": "Symmetric, matched spread",
+    "support_rms_displacement_ratio4": "4:1",
+    "mirrored_learned": "Mirrored learned",
+    "fixed_ob1_gaussian": "OB1 fit (in-sample)",
+    "learned_asymmetric": "Learned asymmetric",
+}
 PROFILE_METRIC_DIRECTIONS = {
     "profile_spearman": "higher",
     "js_divergence": "lower",
+    "hellinger_distance": "lower",
+    "total_variation_distance": "lower",
+    "overlap_coefficient": "higher",
     "token_offset_wasserstein": "lower",
+}
+PROFILE_INFERENTIAL_METRIC_DIRECTIONS = {
+    metric: direction
+    for metric, direction in PROFILE_METRIC_DIRECTIONS.items()
+    if metric != "overlap_coefficient"
 }
 PROFILE_COMPARISONS = (
     ("learned_asymmetric", "raw_delta"),
     ("learned_asymmetric", "fixed_symmetric_sigma1"),
     ("learned_asymmetric", "rms_side_scale_symmetric"),
-    ("fixed_ob1_gaussian", "raw_delta"),
-    ("fixed_ob1_gaussian", "fixed_symmetric_sigma1"),
-    ("fixed_ob1_gaussian", "rms_side_scale_symmetric"),
-    ("learned_asymmetric", "fixed_ob1_gaussian"),
+    ("learned_asymmetric", "fixed_ratio4_same_rms"),
+    ("learned_asymmetric", "support_rms_displacement_symmetric"),
+    ("learned_asymmetric", "support_rms_displacement_ratio4"),
+    ("learned_asymmetric", "mirrored_learned"),
+    ("fixed_ratio4_same_rms", "rms_side_scale_symmetric"),
+    (
+        "support_rms_displacement_ratio4",
+        "support_rms_displacement_symmetric",
+    ),
 )
 OB1_MIN_ATTENTION_WIDTH = 3.0
 OB1_MAX_ATTENTION_WIDTH = 5.0
@@ -97,6 +173,16 @@ PROFILE_ANALYSIS_ESTIMAND = FIXATION_MATCHED_ANALYSIS_ESTIMAND
 RIGHTWARD_SHARE_SCOPE = (
     "descriptive point estimate from the fixation-weighted pooled offset "
     "profile under the declared candidate-support policy; no bootstrap CI"
+)
+PROFILE_SPEARMAN_SCOPE = (
+    "Spearman correlation over the passage-specific union of offsets with "
+    "positive OB1 or candidate mass; offsets absent from both profiles are "
+    "excluded rather than treated as shared tied zeros"
+)
+PROFILE_DISTRIBUTION_METRIC_SCOPE = (
+    "Hellinger and total variation distances are computed on complete "
+    "normalized passage-level offset profiles; overlap coefficient and its "
+    "intervals are derived exactly as one minus total variation distance"
 )
 
 
@@ -822,20 +908,116 @@ def pool_passage_profiles(
     return pooled / pooled.sum()
 
 
+def rms_token_displacement(
+    profile: np.ndarray,
+    support: np.ndarray,
+) -> float:
+    """Return root mean squared offset from the source token."""
+    distribution = np.asarray(profile, dtype=float)
+    offsets = np.asarray(support, dtype=float)
+    if (
+        distribution.ndim != 1
+        or offsets.ndim != 1
+        or distribution.shape != offsets.shape
+        or distribution.size == 0
+        or not np.isfinite(distribution).all()
+        or not np.isfinite(offsets).all()
+        or np.any(distribution < 0)
+        or float(distribution.sum()) <= 0
+    ):
+        raise ValueError(
+            "RMS token displacement requires aligned finite nonnegative "
+            "profile and support vectors"
+        )
+    normalized = distribution / distribution.sum()
+    return float(np.sqrt(np.sum(normalized * offsets**2)))
+
+
+def fit_scale_to_rms_token_displacement(
+    candidate_builder,
+    support: np.ndarray,
+    right_left_ratio: float,
+    target_rms_displacement: float,
+) -> dict:
+    """Match realized pooled RMS token displacement at a fixed side ratio."""
+    ratio = float(right_left_ratio)
+    target = float(target_rms_displacement)
+    if not math.isfinite(ratio) or ratio <= 0:
+        raise ValueError("RMS-displacement match ratio must be positive")
+    if not math.isfinite(target) or target <= 0:
+        raise ValueError(
+            "Target RMS token displacement must be finite and positive"
+        )
+    lower_left = 0.05
+    upper_left = min(30.0, 30.0 / ratio)
+    if upper_left <= lower_left:
+        raise ValueError("RMS-displacement match ratio exceeds scale bounds")
+
+    def objective(log_sigma_left: float) -> float:
+        sigma_left = math.exp(float(log_sigma_left))
+        sigma_right = ratio * sigma_left
+        realized = rms_token_displacement(
+            candidate_builder(sigma_left, sigma_right),
+            support,
+        )
+        return float((realized - target) ** 2)
+
+    result = minimize_scalar(
+        objective,
+        bounds=(math.log(lower_left), math.log(upper_left)),
+        method="bounded",
+        options={"xatol": 1e-12, "maxiter": 500},
+    )
+    if not result.success or not math.isfinite(float(result.fun)):
+        raise RuntimeError(
+            "RMS-displacement scale match failed: "
+            f"{result.message}"
+        )
+    sigma_left = math.exp(float(result.x))
+    sigma_right = ratio * sigma_left
+    achieved = rms_token_displacement(
+        candidate_builder(sigma_left, sigma_right),
+        support,
+    )
+    if not math.isclose(
+        achieved,
+        target,
+        rel_tol=1e-7,
+        abs_tol=1e-8,
+    ):
+        raise RuntimeError(
+            "Requested RMS token displacement is not attainable within "
+            "the declared sigma bounds"
+        )
+    return {
+        "sigma_left": float(sigma_left),
+        "sigma_right": float(sigma_right),
+        "right_left_ratio": ratio,
+        "target_rms_token_displacement": target,
+        "achieved_rms_token_displacement": achieved,
+        "absolute_match_error": abs(achieved - target),
+        "sigma_bounds": [0.05, 30.0],
+        "fit_scope": (
+            "pooled fixation-conditioned candidate support; target derived "
+            "from the frozen learned kernel, not from OB1 attention weights"
+        ),
+    }
+
+
 def fit_ob1_gaussian_prior(
     reference_profile: np.ndarray,
     support: np.ndarray,
     candidate_builder=None,
     candidate_support_policy: str = "global",
 ) -> dict:
-    """Fit an asymmetric Gaussian under the declared support policy."""
+    """Fit two independently bounded Gaussian side scales."""
     reference = np.asarray(reference_profile, dtype=float)
     reference = reference / reference.sum()
     candidate_support_policy_metadata(candidate_support_policy)
 
     def objective(parameters: np.ndarray) -> float:
         sigma_left = math.exp(float(parameters[0]))
-        sigma_right = sigma_left * math.exp(float(parameters[1]))
+        sigma_right = math.exp(float(parameters[1]))
         candidate = (
             candidate_profile(
                 support,
@@ -851,20 +1033,28 @@ def fit_ob1_gaussian_prior(
         )
         return float(jensenshannon(reference, candidate, base=2.0) ** 2)
 
-    result = minimize(
-        objective,
-        x0=np.asarray([math.log(1.0), math.log(4.0)]),
-        method="L-BFGS-B",
-        bounds=[
-            (math.log(0.05), math.log(30.0)),
-            (math.log(1.001), math.log(20.0)),
-        ],
-        options={"maxiter": 500, "ftol": 1e-14},
-    )
-    if not result.success or not np.isfinite(result.fun):
-        raise RuntimeError(f"OB1 Gaussian fit failed: {result.message}")
+    log_bounds = (math.log(0.05), math.log(30.0))
+    results = [
+        minimize(
+            objective,
+            x0=np.log(np.asarray(initial, dtype=float)),
+            method="L-BFGS-B",
+            bounds=[log_bounds, log_bounds],
+            options={"maxiter": 500, "ftol": 1e-14},
+        )
+        for initial in ((1.0, 1.0), (1.0, 4.0), (4.0, 1.0))
+    ]
+    successful = [
+        result
+        for result in results
+        if result.success and np.isfinite(result.fun)
+    ]
+    if not successful:
+        messages = "; ".join(str(result.message) for result in results)
+        raise RuntimeError(f"OB1 Gaussian fit failed: {messages}")
+    result = min(successful, key=lambda candidate: float(candidate.fun))
     sigma_left = math.exp(float(result.x[0]))
-    sigma_right = sigma_left * math.exp(float(result.x[1]))
+    sigma_right = math.exp(float(result.x[1]))
     return {
         "sigma_left": float(sigma_left),
         "sigma_right": float(sigma_right),
@@ -872,7 +1062,79 @@ def fit_ob1_gaussian_prior(
         "fit_js_divergence": float(result.fun),
         "optimizer": "L-BFGS-B",
         "optimizer_iterations": int(result.nit),
+        "optimizer_initializations": [
+            [1.0, 1.0],
+            [1.0, 4.0],
+            [4.0, 1.0],
+        ],
+        "sigma_bounds": [0.05, 30.0],
         "fit_objective": "Jensen-Shannon divergence in T5 token-offset space",
+        "candidate_support_policy": candidate_support_policy,
+    }
+
+
+def fit_ob1_gaussian_at_fixed_ratio(
+    reference_profile: np.ndarray,
+    support: np.ndarray,
+    right_left_ratio: float,
+    candidate_builder=None,
+    candidate_support_policy: str = "global",
+) -> dict:
+    """Fit one scale while holding the Gaussian right-to-left ratio fixed."""
+    reference = np.asarray(reference_profile, dtype=float)
+    reference = reference / reference.sum()
+    ratio = float(right_left_ratio)
+    if not math.isfinite(ratio) or ratio <= 0:
+        raise ValueError("Fixed Gaussian ratio must be finite and positive")
+    candidate_support_policy_metadata(candidate_support_policy)
+    upper_left = min(30.0, 30.0 / ratio)
+    if upper_left <= 0.05:
+        raise ValueError("Fixed Gaussian ratio is outside supported bounds")
+
+    def objective(parameters: np.ndarray) -> float:
+        sigma_left = math.exp(float(parameters[0]))
+        sigma_right = ratio * sigma_left
+        candidate = (
+            candidate_profile(
+                support,
+                "fixed_ratio_gaussian",
+                sigma_left,
+                sigma_right,
+            )
+            if candidate_builder is None
+            else candidate_builder(sigma_left, sigma_right)
+        )
+        return float(jensenshannon(reference, candidate, base=2.0) ** 2)
+
+    initial_left = min(max(1.0 / math.sqrt(ratio), 0.051), upper_left)
+    result = minimize(
+        objective,
+        x0=np.asarray([math.log(initial_left)]),
+        method="L-BFGS-B",
+        bounds=[(math.log(0.05), math.log(upper_left))],
+        options={"maxiter": 500, "ftol": 1e-14},
+    )
+    if not result.success or not np.isfinite(result.fun):
+        raise RuntimeError(
+            f"Fixed-ratio OB1 Gaussian fit failed: {result.message}"
+        )
+    sigma_left = math.exp(float(result.x[0]))
+    sigma_right = ratio * sigma_left
+    return {
+        "sigma_left": float(sigma_left),
+        "sigma_right": float(sigma_right),
+        "right_left_ratio": ratio,
+        "quadratic_side_scale": rms_scale_symmetric_sigma(
+            sigma_left,
+            sigma_right,
+        ),
+        "fit_js_divergence": float(result.fun),
+        "optimizer": "L-BFGS-B",
+        "optimizer_iterations": int(result.nit),
+        "fit_objective": (
+            "Jensen-Shannon divergence in T5 token-offset space at a "
+            "fixed right-to-left sigma ratio"
+        ),
         "candidate_support_policy": candidate_support_policy,
     }
 
@@ -885,7 +1147,34 @@ def profile_metrics(
     """Compute profile shape metrics against projected OB1 attention."""
     reference = np.asarray(reference, dtype=float)
     candidate = np.asarray(candidate, dtype=float)
-    rho = float(spearmanr(reference, candidate).statistic)
+    support = np.asarray(support)
+    if (
+        reference.ndim != 1
+        or candidate.ndim != 1
+        or support.ndim != 1
+        or reference.shape != candidate.shape
+        or reference.shape != support.shape
+    ):
+        raise ValueError(
+            "Reference, candidate, and support must be aligned vectors"
+        )
+    if (
+        not np.isfinite(support).all()
+        or bool((np.diff(support.astype(float)) <= 0).any())
+    ):
+        raise ValueError("Attention-profile support must be finite and increasing")
+    distribution_metrics = distribution_similarity_metrics(
+        reference,
+        candidate,
+    )
+    observed = (reference > 0) | (candidate > 0)
+    if int(observed.sum()) < 2:
+        raise ValueError(
+            "Attention-profile Spearman needs at least two observed offsets"
+        )
+    rho = float(
+        spearmanr(reference[observed], candidate[observed]).statistic
+    )
     if not math.isfinite(rho):
         raise ValueError("Attention-profile Spearman is not finite")
     return {
@@ -893,6 +1182,7 @@ def profile_metrics(
         "js_divergence": float(
             jensenshannon(reference, candidate, base=2.0) ** 2
         ),
+        **distribution_metrics,
         "token_offset_wasserstein": float(
             wasserstein_distance(
                 support,
@@ -902,6 +1192,283 @@ def profile_metrics(
             )
         ),
     }
+
+
+def gaussian_parameter_status(
+    model_id: str,
+    fitted_to_ob1: bool,
+) -> str:
+    """Describe how one Gaussian parameter row was selected."""
+    if fitted_to_ob1:
+        return "descriptive in-sample fit to the same pooled OB1 profile"
+    if model_id == "fixed_ratio4_same_rms":
+        return (
+            "not fitted to Provo or the current OB1 profile; the 4:1 ratio "
+            "is the paper-stated OB1 asymmetry and the quadratic side-scale "
+            "RMS comes from the frozen learned kernel"
+        )
+    if model_id in {
+        "support_rms_displacement_symmetric",
+        "support_rms_displacement_ratio4",
+    }:
+        return (
+            "scale selected to match the frozen learned kernel's pooled "
+            "realized RMS token displacement on the fixation-conditioned "
+            "support; no OB1 attention weights used"
+        )
+    if model_id == "mirrored_learned":
+        return (
+            "frozen learned side scales exchanged at the parameter level "
+            "under the same fixation-conditioned support"
+        )
+    if model_id == "learned_fixed":
+        return (
+            "frozen learned parameters; not fitted to Provo or the current "
+            "OB1 profile"
+        )
+    if model_id == "fixed_same_rms_symmetric":
+        return (
+            "quadratic side-scale RMS derived from the frozen learned kernel; "
+            "not fitted to Provo or the current OB1 profile"
+        )
+    return (
+        "fixed a priori without fitting to Provo or the current OB1 profile"
+    )
+
+
+def gaussian_parameter_diagnostics(
+    reference_profile: np.ndarray,
+    support: np.ndarray,
+    candidate_builder,
+    checkpoint_record: dict,
+    ob1_attention_skew: float,
+    unconstrained_fit: dict,
+    candidate_support_policy: str,
+    include_support_rms_displacement_controls: bool = True,
+) -> pd.DataFrame:
+    """Compare fixed controls with constrained and unconstrained OB1 fits."""
+    learned_left = float(checkpoint_record["learned_sigma_left"])
+    learned_right = float(checkpoint_record["learned_sigma_right"])
+    learned_ratio = learned_right / learned_left
+    rms_scale = float(
+        checkpoint_record["rms_side_scale_symmetric_sigma"]
+    )
+    ratio4_left, ratio4_right = sigmas_from_ratio_and_rms_scale(
+        FIXED_PSYCHOPHYSICAL_RATIO,
+        rms_scale,
+    )
+    fixed_specs = [
+        (
+            "fixed_symmetric_sigma1",
+            "Symmetric σ=1",
+            FIXED_SYMMETRIC_SIGMA,
+            FIXED_SYMMETRIC_SIGMA,
+            False,
+            0,
+            "s",
+            55,
+            "white",
+            "black",
+        ),
+        (
+            "fixed_same_rms_symmetric",
+            "Symmetric, parameter RMS",
+            rms_scale,
+            rms_scale,
+            False,
+            0,
+            "o",
+            48,
+            "#56B4E9",
+            "black",
+        ),
+        (
+            "fixed_ratio4_same_rms",
+            "4:1, parameter RMS",
+            ratio4_left,
+            ratio4_right,
+            False,
+            0,
+            "D",
+            52,
+            "#E69F00",
+            "black",
+        ),
+        (
+            "learned_fixed",
+            "Learned",
+            learned_left,
+            learned_right,
+            False,
+            0,
+            "*",
+            90,
+            "#D55E00",
+            "black",
+        ),
+        (
+            "mirrored_learned",
+            "Mirrored learned",
+            learned_right,
+            learned_left,
+            False,
+            0,
+            "<",
+            62,
+            "#0072B2",
+            "black",
+        ),
+    ]
+    if include_support_rms_displacement_controls:
+        fixed_specs[3:3] = [
+            (
+                "support_rms_displacement_symmetric",
+                "Symmetric, matched spread",
+                checkpoint_record[
+                    "support_rms_displacement_symmetric_sigma"
+                ],
+                checkpoint_record[
+                    "support_rms_displacement_symmetric_sigma"
+                ],
+                False,
+                1,
+                "v",
+                54,
+                "#88CCEE",
+                "black",
+            ),
+            (
+                "support_rms_displacement_ratio4",
+                "4:1",
+                checkpoint_record[
+                    "support_rms_displacement_ratio4_sigma_left"
+                ],
+                checkpoint_record[
+                    "support_rms_displacement_ratio4_sigma_right"
+                ],
+                False,
+                1,
+                "^",
+                54,
+                "#AA4499",
+                "black",
+            ),
+        ]
+    fitted_specs = []
+    for model_id, label, ratio in (
+        ("ob1_fit_symmetric", "OB1 fit, ratio 1", 1.0),
+        ("ob1_fit_ratio3", "OB1 fit, ratio 3", 3.0),
+        ("ob1_fit_ratio4", "OB1 fit, ratio 4", 4.0),
+        (
+            "ob1_fit_learned_ratio",
+            "OB1 fit, learned ratio",
+            learned_ratio,
+        ),
+    ):
+        fitted = fit_ob1_gaussian_at_fixed_ratio(
+            reference_profile,
+            support,
+            ratio,
+            candidate_builder=candidate_builder,
+            candidate_support_policy=candidate_support_policy,
+        )
+        marker = "P" if model_id == "ob1_fit_ratio4" else np.nan
+        fitted_specs.append(
+            (
+                model_id,
+                label,
+                fitted["sigma_left"],
+                fitted["sigma_right"],
+                True,
+                1,
+                marker,
+                58,
+                "#009E73",
+                "black",
+            )
+        )
+    fitted_specs.append(
+        (
+            "ob1_fit_unconstrained",
+            "OB1 fit, free ratio (bounded)",
+            float(unconstrained_fit["sigma_left"]),
+            float(unconstrained_fit["sigma_right"]),
+            True,
+            2,
+            "X",
+            68,
+            "#CC79A7",
+            "black",
+        )
+    )
+    offsets = np.asarray(support, dtype=int)
+    records = []
+    for (
+        model_id,
+        label,
+        sigma_left,
+        sigma_right,
+        fitted_to_ob1,
+        fit_parameters,
+        marker,
+        marker_size,
+        facecolor,
+        edgecolor,
+    ) in (*fixed_specs, *fitted_specs):
+        candidate = candidate_builder(sigma_left, sigma_right)
+        left_mass = float(candidate[offsets < 0].sum())
+        center_mass = float(candidate[offsets == 0].sum())
+        right_mass = float(candidate[offsets > 0].sum())
+        records.append(
+            {
+                "checkpoint_id": checkpoint_record["checkpoint_id"],
+                "ob1_attention_skew": float(ob1_attention_skew),
+                "model_id": model_id,
+                "short_label": label,
+                "sigma_left": float(sigma_left),
+                "sigma_right": float(sigma_right),
+                "right_left_ratio": float(sigma_right / sigma_left),
+                "quadratic_side_scale": rms_scale_symmetric_sigma(
+                    sigma_left,
+                    sigma_right,
+                ),
+                "realized_rms_token_displacement": rms_token_displacement(
+                    candidate,
+                    offsets,
+                ),
+                "fitted_to_same_ob1_profile": fitted_to_ob1,
+                "fit_parameter_count": fit_parameters,
+                "parameter_status": gaussian_parameter_status(
+                    model_id,
+                    fitted_to_ob1,
+                ),
+                **profile_metrics(
+                    reference_profile,
+                    candidate,
+                    offsets,
+                ),
+                "left_mass": left_mass,
+                "center_mass": center_mass,
+                "right_mass": right_mass,
+                "distant_right_mass": float(
+                    candidate[offsets >= 2].sum()
+                ),
+                "right_share_of_noncenter_mass": (
+                    right_mass / (left_mass + right_mass)
+                    if left_mass + right_mass > 0
+                    else np.nan
+                ),
+                "metric_scope": (
+                    "descriptive fixation-weighted pooled profile; "
+                    "no passage bootstrap"
+                ),
+                "landscape_marker": marker,
+                "landscape_marker_size": marker_size,
+                "landscape_facecolor": facecolor,
+                "landscape_edgecolor": edgecolor,
+            }
+        )
+    return pd.DataFrame(records)
 
 
 def summarize_profile_metrics(
@@ -930,6 +1497,12 @@ def summarize_profile_metrics(
             "learned_right_left_ratio",
             "fixed_symmetric_sigma",
             "rms_side_scale_symmetric_sigma",
+            "fixed_ratio4_same_rms_sigma_left",
+            "fixed_ratio4_same_rms_sigma_right",
+            "learned_support_rms_token_displacement",
+            "support_rms_displacement_symmetric_sigma",
+            "support_rms_displacement_ratio4_sigma_left",
+            "support_rms_displacement_ratio4_sigma_right",
         ):
             if column in group:
                 values = group[column].drop_duplicates()
@@ -938,7 +1511,7 @@ def summarize_profile_metrics(
                         f"{column} is not constant within {checkpoint_id}"
                     )
                 record[column] = values.iloc[0]
-        for metric in PROFILE_METRIC_DIRECTIONS:
+        for metric in PROFILE_INFERENTIAL_METRIC_DIRECTIONS:
             mean, low, high = bootstrap_mean(
                 group[metric].to_numpy(),
                 bootstrap_samples,
@@ -947,6 +1520,15 @@ def summarize_profile_metrics(
             record[metric] = mean
             record[f"{metric}_ci_low"] = low
             record[f"{metric}_ci_high"] = high
+        record["overlap_coefficient"] = (
+            1.0 - record["total_variation_distance"]
+        )
+        record["overlap_coefficient_ci_low"] = (
+            1.0 - record["total_variation_distance_ci_high"]
+        )
+        record["overlap_coefficient_ci_high"] = (
+            1.0 - record["total_variation_distance_ci_low"]
+        )
         records.append(record)
     return pd.DataFrame(records)
 
@@ -955,6 +1537,7 @@ def profile_paired_contrasts(
     passage_metrics: pd.DataFrame,
     bootstrap_samples: int,
     seed: int,
+    comparisons: tuple[tuple[str, str], ...] = PROFILE_COMPARISONS,
 ) -> pd.DataFrame:
     """Compute paired passage-level contrasts for every sigma record."""
     bootstrap_rng = np.random.default_rng(seed)
@@ -975,6 +1558,12 @@ def profile_paired_contrasts(
             "learned_right_left_ratio",
             "fixed_symmetric_sigma",
             "rms_side_scale_symmetric_sigma",
+            "fixed_ratio4_same_rms_sigma_left",
+            "fixed_ratio4_same_rms_sigma_right",
+            "learned_support_rms_token_displacement",
+            "support_rms_displacement_symmetric_sigma",
+            "support_rms_displacement_ratio4_sigma_left",
+            "support_rms_displacement_ratio4_sigma_right",
         ):
             if column in skew_metrics:
                 values = skew_metrics[column].drop_duplicates()
@@ -983,7 +1572,7 @@ def profile_paired_contrasts(
                         f"{column} is not constant within {checkpoint_id}"
                     )
                 metadata[column] = values.iloc[0]
-        for candidate_name, baseline_name in PROFILE_COMPARISONS:
+        for candidate_name, baseline_name in comparisons:
             candidate = skew_metrics.loc[
                 skew_metrics["method"].eq(candidate_name)
             ].set_index("passage_id_zero_based")
@@ -995,7 +1584,9 @@ def profile_paired_contrasts(
                 raise ValueError(
                     "Profile contrast needs at least two passages"
                 )
-            for metric, direction in PROFILE_METRIC_DIRECTIONS.items():
+            for metric, direction in (
+                PROFILE_INFERENTIAL_METRIC_DIRECTIONS.items()
+            ):
                 if direction == "higher":
                     differences = (
                         candidate.loc[common, metric]
@@ -1016,20 +1607,23 @@ def profile_paired_contrasts(
                     bootstrap_samples,
                     permutation_rng,
                 )
-                records.append(
-                    {
-                        **metadata,
-                        "candidate": candidate_name,
-                        "baseline": baseline_name,
-                        "metric": metric,
-                        "positive_means_improvement": True,
-                        "passages": int(len(common)),
-                        "mean_paired_improvement": mean,
-                        "ci_low": low,
-                        "ci_high": high,
-                        "permutation_p_two_sided": p_value,
-                    }
-                )
+                record = {
+                    **metadata,
+                    "candidate": candidate_name,
+                    "baseline": baseline_name,
+                    "metric": metric,
+                    "positive_means_improvement": True,
+                    "passages": int(len(common)),
+                    "mean_paired_improvement": mean,
+                    "ci_low": low,
+                    "ci_high": high,
+                    "permutation_p_two_sided": p_value,
+                }
+                records.append(record)
+                if metric == "total_variation_distance":
+                    overlap_record = dict(record)
+                    overlap_record["metric"] = "overlap_coefficient"
+                    records.append(overlap_record)
     return pd.DataFrame(records)
 
 
@@ -1045,10 +1639,31 @@ def compare_attention_profiles(
     seed: int = 20260725,
     trajectory_attention_skew: float | None = None,
     candidate_support_policy: str = "fixation_matched",
+    landscape_sigma_values: np.ndarray | None = None,
+    skip_support_rms_displacement_controls: bool = False,
 ) -> dict:
     """Compare allocation kernels with a projected OB1 attention component."""
     support_policy_label, analysis_estimand = (
         candidate_support_policy_metadata(candidate_support_policy)
+    )
+    active_profile_methods = tuple(
+        method
+        for method in PROFILE_METHODS
+        if not (
+            skip_support_rms_displacement_controls
+            and method in SUPPORT_RMS_DISPLACEMENT_METHODS
+        )
+    )
+    active_inferential_methods = tuple(
+        method
+        for method in active_profile_methods
+        if method != "fixed_ob1_gaussian"
+    )
+    active_comparisons = tuple(
+        (candidate, baseline)
+        for candidate, baseline in PROFILE_COMPARISONS
+        if candidate in active_inferential_methods
+        and baseline in active_inferential_methods
     )
     if isinstance(sigma_records, dict):
         sigma_records = [sigma_records]
@@ -1066,18 +1681,23 @@ def compare_attention_profiles(
             raise ValueError(
                 f"Sigma record is missing keys: {missing_sigma}"
             )
+        rms_symmetric_sigma = rms_scale_symmetric_sigma(
+            float(sigma_record["sigma_left"]),
+            float(sigma_record["sigma_right"]),
+        )
+        ratio4_left, ratio4_right = sigmas_from_ratio_and_rms_scale(
+            FIXED_PSYCHOPHYSICAL_RATIO,
+            rms_symmetric_sigma,
+        )
         normalized_record = {
             "checkpoint_id": str(sigma_record["checkpoint_id"]),
             "source_accuracy": sigma_record.get("source_accuracy"),
             "learned_sigma_left": float(sigma_record["sigma_left"]),
             "learned_sigma_right": float(sigma_record["sigma_right"]),
             "fixed_symmetric_sigma": FIXED_SYMMETRIC_SIGMA,
-            "rms_side_scale_symmetric_sigma": (
-                rms_scale_symmetric_sigma(
-                    float(sigma_record["sigma_left"]),
-                    float(sigma_record["sigma_right"]),
-                )
-            ),
+            "rms_side_scale_symmetric_sigma": rms_symmetric_sigma,
+            "fixed_ratio4_same_rms_sigma_left": ratio4_left,
+            "fixed_ratio4_same_rms_sigma_right": ratio4_right,
         }
         if (
             normalized_record["learned_sigma_left"] <= 0
@@ -1085,6 +1705,12 @@ def compare_attention_profiles(
             or normalized_record["fixed_symmetric_sigma"] <= 0
             or normalized_record[
                 "rms_side_scale_symmetric_sigma"
+            ] <= 0
+            or normalized_record[
+                "fixed_ratio4_same_rms_sigma_left"
+            ] <= 0
+            or normalized_record[
+                "fixed_ratio4_same_rms_sigma_right"
             ] <= 0
         ):
             raise ValueError("All effective sigma values must be positive")
@@ -1111,9 +1737,97 @@ def compare_attention_profiles(
     profile_rows = []
     metric_rows = []
     fixed_prior_records = []
+    reference_global_profiles = {}
+    parameter_diagnostic_frames = []
     global_support_patterns = merge_support_pattern_weights(
         support_patterns
     )
+    if candidate_support_policy == "fixation_matched":
+
+        def pooled_candidate_builder(
+            sigma_left: float,
+            sigma_right: float,
+        ) -> np.ndarray:
+            """Build a Gaussian on every pooled fixation-visible support."""
+            return candidate_profile_on_support_patterns(
+                global_support_patterns,
+                support,
+                "diagnostic_gaussian",
+                sigma_left,
+                sigma_right,
+            )
+
+    else:
+
+        def pooled_candidate_builder(
+            sigma_left: float,
+            sigma_right: float,
+        ) -> np.ndarray:
+            """Build a Gaussian once on the global offset support."""
+            return candidate_profile(
+                support,
+                "diagnostic_gaussian",
+                sigma_left,
+                sigma_right,
+            )
+
+    support_spread_matches = {}
+    for sigma_record in normalized_records:
+        if skip_support_rms_displacement_controls:
+            sigma_record.update(
+                {
+                    "learned_support_rms_token_displacement": None,
+                    "support_rms_displacement_symmetric_sigma": None,
+                    "support_rms_displacement_ratio4_sigma_left": None,
+                    "support_rms_displacement_ratio4_sigma_right": None,
+                }
+            )
+            continue
+        checkpoint_id = sigma_record["checkpoint_id"]
+        learned_profile = pooled_candidate_builder(
+            sigma_record["learned_sigma_left"],
+            sigma_record["learned_sigma_right"],
+        )
+        learned_rms_displacement = rms_token_displacement(
+            learned_profile,
+            support,
+        )
+        symmetric_match = fit_scale_to_rms_token_displacement(
+            pooled_candidate_builder,
+            support,
+            1.0,
+            learned_rms_displacement,
+        )
+        ratio4_match = fit_scale_to_rms_token_displacement(
+            pooled_candidate_builder,
+            support,
+            FIXED_PSYCHOPHYSICAL_RATIO,
+            learned_rms_displacement,
+        )
+        sigma_record.update(
+            {
+                "learned_support_rms_token_displacement": (
+                    learned_rms_displacement
+                ),
+                "support_rms_displacement_symmetric_sigma": (
+                    symmetric_match["sigma_left"]
+                ),
+                "support_rms_displacement_ratio4_sigma_left": (
+                    ratio4_match["sigma_left"]
+                ),
+                "support_rms_displacement_ratio4_sigma_right": (
+                    ratio4_match["sigma_right"]
+                ),
+            }
+        )
+        support_spread_matches[checkpoint_id] = {
+            "target_source": "frozen learned redistribution kernel",
+            "target_profile_uses_ob1_attention_weights": False,
+            "target_profile_uses_fixation_visible_support": True,
+            "symmetric_ratio1": symmetric_match,
+            "fixed_ratio4": ratio4_match,
+        }
+
     candidate_cache = {}
     for sigma_record in normalized_records:
         checkpoint_id = sigma_record["checkpoint_id"]
@@ -1131,11 +1845,38 @@ def compare_attention_profiles(
                 rms_symmetric_sigma,
                 rms_symmetric_sigma,
             ),
+            "fixed_ratio4_same_rms": (
+                sigma_record["fixed_ratio4_same_rms_sigma_left"],
+                sigma_record["fixed_ratio4_same_rms_sigma_right"],
+            ),
+            "support_rms_displacement_symmetric": (
+                sigma_record[
+                    "support_rms_displacement_symmetric_sigma"
+                ],
+                sigma_record[
+                    "support_rms_displacement_symmetric_sigma"
+                ],
+            ),
+            "support_rms_displacement_ratio4": (
+                sigma_record[
+                    "support_rms_displacement_ratio4_sigma_left"
+                ],
+                sigma_record[
+                    "support_rms_displacement_ratio4_sigma_right"
+                ],
+            ),
+            "mirrored_learned": (
+                sigma_record["learned_sigma_right"],
+                sigma_record["learned_sigma_left"],
+            ),
             "learned_asymmetric": (
                 sigma_record["learned_sigma_left"],
                 sigma_record["learned_sigma_right"],
             ),
         }
+        if skip_support_rms_displacement_controls:
+            for method in SUPPORT_RMS_DISPLACEMENT_METHODS:
+                method_sigmas.pop(method)
         candidate_cache[checkpoint_id] = {}
         for method, (left, right) in method_sigmas.items():
             passage_candidates = candidate_profiles_by_passage(
@@ -1163,27 +1904,11 @@ def compare_attention_profiles(
             passage_references,
             support_patterns,
         )
-        if candidate_support_policy == "fixation_matched":
-
-            def fixed_candidate_builder(
-                sigma_left: float,
-                sigma_right: float,
-            ) -> np.ndarray:
-                """Build the fixed prior on pooled exact fixation supports."""
-                return candidate_profile_on_support_patterns(
-                    global_support_patterns,
-                    support,
-                    "fixed_ob1_gaussian",
-                    sigma_left,
-                    sigma_right,
-                )
-
-        else:
-            fixed_candidate_builder = None
+        reference_global_profiles[float(skew)] = reference_global
         fixed_prior = fit_ob1_gaussian_prior(
             reference_global,
             support,
-            candidate_builder=fixed_candidate_builder,
+            candidate_builder=pooled_candidate_builder,
             candidate_support_policy=candidate_support_policy,
         )
         fixed_passage_candidates = candidate_profiles_by_passage(
@@ -1208,6 +1933,21 @@ def compare_attention_profiles(
                 **fixed_prior,
             }
         )
+        for sigma_record in normalized_records:
+            parameter_diagnostic_frames.append(
+                gaussian_parameter_diagnostics(
+                    reference_global,
+                    support,
+                    pooled_candidate_builder,
+                    sigma_record,
+                    float(skew),
+                    fixed_prior,
+                    candidate_support_policy,
+                    include_support_rms_displacement_controls=(
+                        not skip_support_rms_displacement_controls
+                    ),
+                )
+            )
         for sigma_record in normalized_records:
             checkpoint_candidates = candidate_cache[
                 sigma_record["checkpoint_id"]
@@ -1239,6 +1979,8 @@ def compare_attention_profiles(
                 )
             for passage_id, reference in passage_references.items():
                 for method, candidates in method_candidates.items():
+                    if method not in active_inferential_methods:
+                        continue
                     candidate = candidates["passages"][passage_id]
                     metric_rows.append(
                         {
@@ -1254,6 +1996,19 @@ def compare_attention_profiles(
                         }
                     )
 
+    parameter_diagnostics = pd.concat(
+        parameter_diagnostic_frames,
+        ignore_index=True,
+    )
+    sigma_landscape = None
+    if landscape_sigma_values is not None:
+        sigma_landscape = build_sigma_landscape(
+            reference_global_profiles,
+            support,
+            pooled_candidate_builder,
+            np.asarray(landscape_sigma_values, dtype=float),
+            profile_metrics,
+        )
     passage_metrics = pd.DataFrame(metric_rows)
     reference_profile = ob1_reference_display_name(profile_component)
     passage_metrics["reference_profile"] = reference_profile
@@ -1282,6 +2037,7 @@ def compare_attention_profiles(
         passage_metrics,
         bootstrap_samples,
         seed,
+        active_comparisons,
     )
     contrasts["candidate_display_name"] = contrasts["candidate"].map(
         PROFILE_DISPLAY_NAMES
@@ -1315,6 +2071,10 @@ def compare_attention_profiles(
         table["profile_component"] = profile_component
         table["fixation_weighting"] = fixation_weighting
         table["trajectory_attention_skew"] = trajectory_skew
+        table["profile_spearman_scope"] = PROFILE_SPEARMAN_SCOPE
+        table["distribution_metric_scope"] = (
+            PROFILE_DISTRIBUTION_METRIC_SCOPE
+        )
         add_attention_skew_provenance(table, trajectory_skew)
     audit = {
         **collection_audit,
@@ -1359,6 +2119,8 @@ def compare_attention_profiles(
         "ob1_simulation_ids_resampled": False,
         "sigma_values_treated_as_fixed": True,
         "rightward_share_scope": RIGHTWARD_SHARE_SCOPE,
+        "profile_spearman_scope": PROFILE_SPEARMAN_SCOPE,
+        "distribution_metric_scope": PROFILE_DISTRIBUTION_METRIC_SCOPE,
         "candidate_support_policy": candidate_support_policy,
         "candidate_support_policy_label": support_policy_label,
         "candidate_support_policy_is_primary": (
@@ -1389,7 +2151,89 @@ def compare_attention_profiles(
         "fixed_prior_fit_scope": (
             "all projected OB1 fixations under the declared candidate-support "
             "policy; its alignment to the same OB1 profile is descriptive, "
-            "not held-out validation"
+            "not held-out validation, and is excluded from passage-bootstrap "
+            "confidence intervals and paired significance tests"
+        ),
+        "gaussian_parameter_diagnostic_scope": (
+            " ".join(
+                (
+                    "a priori and frozen-parameter controls do not fit the "
+                    "current Provo OB1 profile;",
+                    (
+                        "support-RMS-displacement controls are disabled;"
+                        if skip_support_rms_displacement_controls
+                        else (
+                            "support-RMS-displacement controls use the "
+                            "evaluation fixation supports but not OB1 "
+                            "attention weights;"
+                        )
+                    ),
+                    (
+                        "constrained and free-ratio OB1 fits use the same "
+                        "pooled reference and are descriptive in-sample "
+                        "diagnostics"
+                    ),
+                )
+            )
+        ),
+        "fixed_ratio4_control_definition": (
+            "right_left_ratio=4 specified a priori from the paper-stated "
+            "OB1 asymmetry, with the same quadratic side-scale RMS as the "
+            "frozen learned kernel; this does not guarantee equal realized "
+            "variance after support truncation and normalization"
+        ),
+        "quadratic_side_scale_definition": (
+            "sqrt((sigma_left^2 + sigma_right^2) / 2)"
+        ),
+        "mirrored_control_definition": (
+            "learned sigma_left and sigma_right exchanged; parameter count "
+            "and quadratic side-scale RMS are unchanged, but right-heavy "
+            "visible support means the pooled output is not an exact mirror"
+        ),
+        "support_rms_displacement_matches": support_spread_matches,
+        "support_rms_displacement_controls_enabled": (
+            not skip_support_rms_displacement_controls
+        ),
+        "active_profile_methods": list(active_profile_methods),
+        "support_rms_displacement_definition": (
+            None
+            if skip_support_rms_displacement_controls
+            else (
+                "sqrt(sum_d p(d) * d^2) in relative native T5-token offsets, "
+                "with p pooled over the declared fixation-conditioned support"
+            )
+        ),
+        "support_rms_displacement_control_scope": (
+            None
+            if skip_support_rms_displacement_controls
+            else (
+                "post hoc support-conditioned ablation: the target comes from "
+                "the frozen learned candidate and does not use OB1 attention "
+                "weights; the visible supports come from the evaluation "
+                "fixation contexts"
+            )
+        ),
+        "sigma_landscape_enabled": landscape_sigma_values is not None,
+        "sigma_landscape_scope": (
+            "descriptive fixation-weighted pooled profile without passage "
+            "bootstrap"
+            if landscape_sigma_values is not None
+            else None
+        ),
+        "sigma_landscape_min": (
+            float(np.min(landscape_sigma_values))
+            if landscape_sigma_values is not None
+            else None
+        ),
+        "sigma_landscape_max": (
+            float(np.max(landscape_sigma_values))
+            if landscape_sigma_values is not None
+            else None
+        ),
+        "sigma_landscape_points": (
+            int(len(landscape_sigma_values))
+            if landscape_sigma_values is not None
+            else 0
         ),
     }
     if len(normalized_records) == 1:
@@ -1409,6 +2253,14 @@ def compare_attention_profiles(
     add_attention_skew_provenance(
         attention_profiles,
         trajectory_skew,
+    )
+    profile_regions = summarize_profile_regions(
+        attention_profiles,
+        ("ob1_attention_profile", *active_profile_methods),
+        {
+            "ob1_attention_profile": reference_profile,
+            **PROFILE_DISPLAY_NAMES,
+        },
     )
     directionality = summarize_directionality(attention_profiles)
     directionality["display_name"] = directionality["method"].map(
@@ -1441,6 +2293,12 @@ def compare_attention_profiles(
             "learned_right_left_ratio",
             "fixed_symmetric_sigma",
             "rms_side_scale_symmetric_sigma",
+            "fixed_ratio4_same_rms_sigma_left",
+            "fixed_ratio4_same_rms_sigma_right",
+            "learned_support_rms_token_displacement",
+            "support_rms_displacement_symmetric_sigma",
+            "support_rms_displacement_ratio4_sigma_left",
+            "support_rms_displacement_ratio4_sigma_right",
         ],
     ] = np.nan
     reviewer_summary = build_reviewer_profile_summary(
@@ -1455,6 +2313,9 @@ def compare_attention_profiles(
         "result_table": result_table,
         "contrasts": contrasts,
         "fixed_priors": fixed_prior_records,
+        "parameter_diagnostics": parameter_diagnostics,
+        "profile_regions": profile_regions,
+        "sigma_landscape": sigma_landscape,
         "audit": audit,
     }
 
@@ -1468,6 +2329,10 @@ def build_reviewer_profile_summary(
         "raw_delta",
         "fixed_symmetric_sigma1",
         "rms_side_scale_symmetric",
+        "fixed_ratio4_same_rms",
+        "support_rms_displacement_symmetric",
+        "support_rms_displacement_ratio4",
+        "mirrored_learned",
         "learned_asymmetric",
     )
     key_columns = [
@@ -1517,12 +2382,27 @@ def build_reviewer_profile_summary(
                 "learned_right_left_ratio": np.nan,
                 "fixed_symmetric_sigma": np.nan,
                 "rms_side_scale_symmetric_sigma": np.nan,
+                "fixed_ratio4_same_rms_sigma_left": np.nan,
+                "fixed_ratio4_same_rms_sigma_right": np.nan,
+                "learned_support_rms_token_displacement": np.nan,
+                "support_rms_displacement_symmetric_sigma": np.nan,
+                "support_rms_displacement_ratio4_sigma_left": np.nan,
+                "support_rms_displacement_ratio4_sigma_right": np.nan,
                 "profile_spearman": np.nan,
                 "profile_spearman_ci_low": np.nan,
                 "profile_spearman_ci_high": np.nan,
                 "js_divergence": np.nan,
                 "js_divergence_ci_low": np.nan,
                 "js_divergence_ci_high": np.nan,
+                "hellinger_distance": np.nan,
+                "hellinger_distance_ci_low": np.nan,
+                "hellinger_distance_ci_high": np.nan,
+                "total_variation_distance": np.nan,
+                "total_variation_distance_ci_low": np.nan,
+                "total_variation_distance_ci_high": np.nan,
+                "overlap_coefficient": np.nan,
+                "overlap_coefficient_ci_low": np.nan,
+                "overlap_coefficient_ci_high": np.nan,
                 "token_offset_wasserstein": np.nan,
                 "token_offset_wasserstein_ci_low": np.nan,
                 "token_offset_wasserstein_ci_high": np.nan,
@@ -1538,6 +2418,10 @@ def build_reviewer_profile_summary(
                 "ci_scope": "not applicable: this row is the reference",
                 "profile_component": reference.profile_component,
                 "fixation_weighting": reference.fixation_weighting,
+                "profile_spearman_scope": PROFILE_SPEARMAN_SCOPE,
+                "distribution_metric_scope": (
+                    PROFILE_DISTRIBUTION_METRIC_SCOPE
+                ),
                 "trajectory_attention_skew": (
                     reference.trajectory_attention_skew
                 ),
@@ -1565,8 +2449,12 @@ def build_reviewer_profile_summary(
         "raw_delta": 0,
         "fixed_symmetric_sigma1": 1,
         "rms_side_scale_symmetric": 2,
-        "learned_asymmetric": 3,
-        "ob1_attention_profile": 4,
+        "fixed_ratio4_same_rms": 3,
+        "support_rms_displacement_symmetric": 4,
+        "support_rms_displacement_ratio4": 5,
+        "mirrored_learned": 6,
+        "learned_asymmetric": 7,
+        "ob1_attention_profile": 8,
     }
     combined["_method_order"] = combined["method"].map(method_order)
     combined["rightward_share_scope"] = RIGHTWARD_SHARE_SCOPE
@@ -1609,6 +2497,19 @@ def write_attention_profile_outputs(
         output_dir / "kernel_alignment_contrasts.csv",
         index=False,
     )
+    artifacts["profile_regions"].to_csv(
+        output_dir / "kernel_profile_regions.csv",
+        index=False,
+    )
+    artifacts["parameter_diagnostics"].to_csv(
+        output_dir / "gaussian_parameter_diagnostics.csv",
+        index=False,
+    )
+    if artifacts["sigma_landscape"] is not None:
+        artifacts["sigma_landscape"].to_csv(
+            output_dir / "sigma_landscape.csv",
+            index=False,
+        )
     with (output_dir / "fixed_ob1_priors.json").open(
         "w",
         encoding="utf-8",
@@ -1634,31 +2535,90 @@ def write_attention_profile_outputs(
     profiles = artifacts["attention_profiles"]
     checkpoint_ids = profiles["checkpoint_id"].drop_duplicates().tolist()
     if len(checkpoint_ids) == 1:
+        checkpoint_id = checkpoint_ids[0]
         plot_attention_profiles(
             profiles,
             output_dir / "kernel_profiles.png",
         )
+        plot_metric_comparison(
+            artifacts["result_table"],
+            output_dir / "kernel_metric_comparison.png",
+            REVIEWER_PLOT_METHODS,
+            PROFILE_SHORT_DISPLAY_NAMES,
+        )
+        plot_profile_regions(
+            artifacts["profile_regions"],
+            output_dir / "kernel_profile_regions.png",
+            ("ob1_attention_profile", *REVIEWER_PLOT_METHODS),
+            PROFILE_SHORT_DISPLAY_NAMES,
+        )
+        plot_parameter_diagnostics(
+            artifacts["parameter_diagnostics"],
+            output_dir / "gaussian_parameter_diagnostics.png",
+        )
+        if artifacts["sigma_landscape"] is not None:
+            plot_sigma_landscape(
+                artifacts["sigma_landscape"],
+                artifacts["parameter_diagnostics"],
+                output_dir,
+                checkpoint_id,
+            )
     else:
         plot_dir = output_dir / "kernel_profile_plots"
+        metric_dir = output_dir / "kernel_metric_plots"
+        region_dir = output_dir / "kernel_region_plots"
+        diagnostic_dir = output_dir / "gaussian_parameter_plots"
+        landscape_dir = output_dir / "sigma_landscape_plots"
         for checkpoint_id in checkpoint_ids:
-            safe_id = re.sub(
-                r"[^A-Za-z0-9._-]+",
-                "_",
-                str(checkpoint_id),
-            ).strip("_")
+            safe_id = safe_identifier(checkpoint_id)
             plot_attention_profiles(
                 profiles.loc[
                     profiles["checkpoint_id"].eq(checkpoint_id)
                 ],
                 plot_dir / f"{safe_id}.png",
             )
+            plot_metric_comparison(
+                artifacts["result_table"].loc[
+                    artifacts["result_table"]["checkpoint_id"].eq(
+                        checkpoint_id
+                    )
+                ],
+                metric_dir / f"{safe_id}.png",
+                REVIEWER_PLOT_METHODS,
+                PROFILE_SHORT_DISPLAY_NAMES,
+            )
+            plot_profile_regions(
+                artifacts["profile_regions"].loc[
+                    artifacts["profile_regions"]["checkpoint_id"].eq(
+                        checkpoint_id
+                    )
+                ],
+                region_dir / f"{safe_id}.png",
+                ("ob1_attention_profile", *REVIEWER_PLOT_METHODS),
+                PROFILE_SHORT_DISPLAY_NAMES,
+            )
+            plot_parameter_diagnostics(
+                artifacts["parameter_diagnostics"].loc[
+                    artifacts["parameter_diagnostics"]["checkpoint_id"].eq(
+                        checkpoint_id
+                    )
+                ],
+                diagnostic_dir / f"{safe_id}.png",
+            )
+            if artifacts["sigma_landscape"] is not None:
+                plot_sigma_landscape(
+                    artifacts["sigma_landscape"],
+                    artifacts["parameter_diagnostics"],
+                    landscape_dir / safe_id,
+                    checkpoint_id,
+                )
 
 
 def plot_attention_profiles(
     profiles: pd.DataFrame,
     output_path: Path,
 ) -> None:
-    """Plot projected OB1 attention and all four token-space kernels."""
+    """Plot projected OB1 attention and every token-space control kernel."""
     skews = sorted(profiles["ob1_attention_skew"].unique())
     components = profiles["profile_component"].drop_duplicates().tolist()
     if len(components) != 1:
@@ -1668,7 +2628,6 @@ def plot_attention_profiles(
     ].drop_duplicates().tolist()
     if len(support_policies) != 1:
         raise ValueError("Profile plot requires one candidate-support policy")
-    reference_label = ob1_reference_display_name(components[0])
     figure, axes = plt.subplots(
         len(skews),
         1,
@@ -1677,28 +2636,41 @@ def plot_attention_profiles(
         squeeze=False,
     )
     series = [
-        ("ob1_attention_profile", reference_label, 2.5),
-        ("raw_delta", PROFILE_DISPLAY_NAMES["raw_delta"], 1.5),
+        ("ob1_attention_profile", "OB1 attention", 2.5),
+        ("raw_delta", "No redistribution", 1.5),
         (
             "fixed_symmetric_sigma1",
-            PROFILE_DISPLAY_NAMES["fixed_symmetric_sigma1"],
+            "Symmetric Gaussian (sigma=1)",
             1.5,
         ),
         (
-            "rms_side_scale_symmetric",
-            PROFILE_DISPLAY_NAMES["rms_side_scale_symmetric"],
+            "support_rms_displacement_symmetric",
+            "Symmetric Gaussian (matched spread)",
+            1.5,
+        ),
+        (
+            "support_rms_displacement_ratio4",
+            "4:1",
+            1.5,
+        ),
+        (
+            "mirrored_learned",
+            "Mirrored learned Gaussian",
             1.5,
         ),
         (
             "fixed_ob1_gaussian",
-            PROFILE_DISPLAY_NAMES["fixed_ob1_gaussian"],
+            "OB1-fitted Gaussian (descriptive)",
             1.5,
         ),
         (
             "learned_asymmetric",
-            PROFILE_DISPLAY_NAMES["learned_asymmetric"],
+            "Learned asymmetric Gaussian",
             1.8,
         ),
+    ]
+    series = [
+        item for item in series if item[0] in profiles.columns
     ]
     for axis, skew in zip(axes[:, 0], skews):
         skew_profiles = profiles.loc[
@@ -1719,7 +2691,7 @@ def plot_attention_profiles(
             f"{support_policies[0]}"
         )
         axis.set_ylabel("Normalized mass")
-        axis.legend(frameon=False, ncol=2)
+        axis.legend(frameon=False, ncol=2, fontsize=8)
     axes[-1, 0].set_xlabel("Relative native T5 token offset")
     figure.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1731,7 +2703,11 @@ def summarize_directionality(profiles: pd.DataFrame) -> pd.DataFrame:
     """Summarize left, center, and right mass for every compared profile."""
     profile_columns = [
         "ob1_attention_profile",
-        *PROFILE_METHODS,
+        *(
+            method
+            for method in PROFILE_METHODS
+            if method in profiles.columns
+        ),
     ]
     records = []
     for (checkpoint_id, skew), skew_profiles in profiles.groupby(
@@ -1767,6 +2743,30 @@ def summarize_directionality(profiles: pd.DataFrame) -> pd.DataFrame:
                     "rms_side_scale_symmetric_sigma": skew_profiles[
                         "rms_side_scale_symmetric_sigma"
                     ].iloc[0],
+                    "fixed_ratio4_same_rms_sigma_left": skew_profiles[
+                        "fixed_ratio4_same_rms_sigma_left"
+                    ].iloc[0],
+                    "fixed_ratio4_same_rms_sigma_right": skew_profiles[
+                        "fixed_ratio4_same_rms_sigma_right"
+                    ].iloc[0],
+                    "learned_support_rms_token_displacement": skew_profiles[
+                        "learned_support_rms_token_displacement"
+                    ].iloc[0],
+                    "support_rms_displacement_symmetric_sigma": (
+                        skew_profiles[
+                            "support_rms_displacement_symmetric_sigma"
+                        ].iloc[0]
+                    ),
+                    "support_rms_displacement_ratio4_sigma_left": (
+                        skew_profiles[
+                            "support_rms_displacement_ratio4_sigma_left"
+                        ].iloc[0]
+                    ),
+                    "support_rms_displacement_ratio4_sigma_right": (
+                        skew_profiles[
+                            "support_rms_displacement_ratio4_sigma_right"
+                        ].iloc[0]
+                    ),
                     "left_mass": left,
                     "center_mass": center,
                     "right_mass": right,

@@ -70,6 +70,10 @@ token:
 | `raw_delta` | No redistribution | All allocation weight remains at the source token |
 | `fixed_symmetric_sigma1` | Fixed SymGaussian control | `sigma_left=sigma_right=1.0`, independent of the learned asymmetric values |
 | `rms_side_scale_symmetric` | RMS side-scale diagnostic | A common sigma equal to the RMS of the learned left and right scale parameters |
+| `fixed_ratio4_same_rms` | Parameter-RMS-controlled psychophysical-ratio diagnostic | Right/left sigma ratio fixed at 4 while retaining the learned quadratic side-scale RMS |
+| `support_rms_displacement_symmetric` | Realized-spread control | Symmetric scale solved to match the learned kernel's pooled RMS token displacement on the same fixation supports |
+| `support_rms_displacement_ratio4` | Realized-spread 4:1 control | Paper-stated 4:1 ratio with scale solved to match the learned kernel's pooled RMS token displacement on the same fixation supports |
+| `mirrored_learned` | Parameter-level direction reversal | Learned left and right sigmas exchanged, preserving parameter count and quadratic side-scale RMS under the same right-heavy support |
 | `learned_asymmetric` | Learned shape | Frozen OASST1-learned asymmetric Gaussian |
 | `fixed_ob1_gaussian` | Descriptive fit | Gaussian fitted to the same projected OB1 profile; not held-out evidence |
 
@@ -87,7 +91,24 @@ The separate RMS side-scale diagnostic uses
 RMS of the two learned scale parameters, not normalized-kernel variance or
 effective span.
 
-## 2. Python-only entry point
+The fixed 4:1 diagnostic uses
+`sigma_left=w*sqrt(2/(1+4^2))` and `sigma_right=4*sigma_left`, where `w` is
+that same side-scale RMS. It therefore isolates ratio under the declared
+parameter-scale control, but it does not match realized variance after
+fixation-support truncation and normalization. The mirrored diagnostic swaps
+the two learned sigmas at the parameter level; right-heavy support means the
+pooled result is not an exact distributional mirror. Neither control is fitted
+to the current Provo OB1 profile. The 4:1 ratio is specified from the published
+OB1 asymmetry and its RMS is inherited from the frozen learned kernel.
+
+The stricter realized-spread controls match
+`sqrt(sum_d p(d) * d^2)` after fixation-specific support normalization and
+pooling. Their target comes from the frozen learned kernel and does not use OB1
+attention weights. Because their scale is solved on evaluation fixation
+supports, they are post-hoc contextual ablations rather than independent
+psychophysical priors.
+
+## 2. Entry points
 
 `cognitive_model_comparsion/main.py` implements:
 
@@ -104,8 +125,11 @@ compare-attention-profile
 run
 ```
 
-No shell script is required. Full runs write resolved paths, checksums,
-arguments, random seeds, package versions, Git state, and output provenance.
+The Python CLI remains the authoritative component interface. Reproducible
+wrapper scripts separately cover environment setup, experiment generation,
+and analysis-only post-processing under `cognitive_model_comparsion/scripts`.
+Full runs write resolved paths, checksums, arguments, random seeds, package
+versions, Git state, and output provenance.
 
 ## 3. Assets
 
@@ -310,9 +334,10 @@ readers.
 
 ## 10. Behavior-level metrics
 
-Spearman uses finite word values directly. JS and word-order Wasserstein clip
-negative model predictions to zero, normalize nonnegative passage mass to
-one, and fail rather than add an undisclosed epsilon when mass is zero.
+Spearman uses finite word values directly. JS, Hellinger, total variation,
+overlap, and word-order Wasserstein clip negative model predictions to zero,
+normalize nonnegative passage mass to one, and fail rather than add an
+undisclosed epsilon when mass is zero.
 
 Per passage:
 
@@ -324,6 +349,10 @@ Per passage:
   \(JS(H,E)\), \(JS(H,S)\), \(JS(H,A)\), \(JS(H,O)\);
 - OB1-referenced Jensen–Shannon divergence:
   \(JS(O,E)\), \(JS(O,S)\), \(JS(O,A)\);
+- Human- and OB1-referenced Hellinger distance on the same normalized
+  allocations;
+- Human- and OB1-referenced total variation distance, with overlap coefficient
+  reported as the exact complement \(1-TV\);
 - Human-referenced `word_order_wasserstein` over normalized word positions
   \(i/(n-1)\);
 - OB1-referenced `ob1_word_order_wasserstein` over the same positions.
@@ -334,7 +363,8 @@ evaluate a scanpath.
 
 The reviewer-facing cognitive table excludes the trivial OB1 self-comparison
 and reports only ET1 raw, symmetric, and asymmetric against OB1 using
-`ob1_spearman`, `ob1_js_divergence`, and
+`ob1_spearman`, `ob1_js_divergence`, `ob1_hellinger_distance`,
+`ob1_total_variation_distance`, `ob1_overlap_coefficient`, and
 `ob1_word_order_wasserstein`. Human-referenced results remain a separate,
 stronger external-validation analysis.
 
@@ -345,9 +375,13 @@ component from cached simulation trajectories, evaluates it at native T5 token
 centers, and represents positions as relative T5 token offsets. Its primary
 metrics are:
 
-- Spearman correlation over relative-token positions;
+- Spearman correlation over the passage-specific union of offsets with
+  positive OB1 or candidate mass, excluding offsets padded to zero in both;
 - Jensen–Shannon divergence between normalized offset profiles;
-- Wasserstein distance along the relative-token-offset axis;
+- Hellinger distance between normalized offset profiles;
+- total variation distance and its exact complement, overlap coefficient;
+- token-offset Wasserstein retained in CSV as a supplemental transport metric,
+  but omitted from the reviewer-facing metric figures;
 - rightward share of non-center allocation mass.
 
 Under the primary `fixation_matched` policy, OB1 and every candidate share the
@@ -415,6 +449,27 @@ evaluation_*/human_spearman_by_passage.png
 evaluation_*/ob1_clean_passages/*
 ```
 
+Attention-profile analysis additionally writes:
+
+```text
+kernel_profiles.csv
+kernel_profiles.png
+kernel_alignment_by_passage.csv
+kernel_alignment_result_table.csv
+kernel_alignment_contrasts.csv
+kernel_profile_regions.csv
+kernel_profile_regions.png
+kernel_metric_comparison.png
+gaussian_parameter_diagnostics.csv
+gaussian_parameter_diagnostics.png
+sigma_landscape.csv
+sigma_landscape_skew_3.png
+sigma_landscape_skew_4.png
+attention_profile_audit.json
+```
+
+The sigma-landscape files are emitted only with `--with-sigma-landscape`.
+
 OneStop preparation:
 
 ```text
@@ -427,12 +482,12 @@ onestop_prepare_audit.json
 
 `result_table.csv` uses:
 
-| Method | Human Spearman ↑ | JS divergence ↓ | Word-order Wasserstein ↓ | OB1 Spearman ↑ |
-|---|---:|---:|---:|---:|
-| ET1 raw | | | | |
-| ET1 + symmetric | | | | |
-| ET1 + learned asymmetric | | | | |
-| OB1 baseline | | | | — |
+| Method | Human Spearman ↑ | JS ↓ | Hellinger ↓ | TV ↓ | Overlap ↑ | OB1 Spearman ↑ |
+|---|---:|---:|---:|---:|---:|---:|
+| ET1 raw | | | | | | |
+| ET1 + symmetric | | | | | | |
+| ET1 + learned asymmetric | | | | | | |
+| OB1 baseline | | | | | | — |
 
 ## 13. Exact direct-sigma commands
 

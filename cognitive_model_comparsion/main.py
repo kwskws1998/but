@@ -13,6 +13,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 
@@ -41,6 +42,8 @@ from cognitive_model_comparsion.src.et1_inference import (
     write_et1_outputs,
 )
 from cognitive_model_comparsion.src.evaluate import (
+    BEHAVIOR_DISTRIBUTION_METRIC_SCOPE,
+    BEHAVIOR_SPEARMAN_SCOPE,
     evaluate_passages,
     merge_word_values,
     paired_contrasts,
@@ -763,6 +766,8 @@ def run_evaluate(
         "human_target": human_target,
         "bootstrap_samples": bootstrap_samples,
         "bootstrap_seed": seed,
+        "behavior_spearman_scope": BEHAVIOR_SPEARMAN_SCOPE,
+        "distribution_metric_scope": BEHAVIOR_DISTRIBUTION_METRIC_SCOPE,
         "resampling_cluster_column": cluster_column,
         "resampling_clusters": (
             int(passage_metrics[cluster_column].nunique())
@@ -1317,6 +1322,27 @@ def command_compare_attention_profile(args: argparse.Namespace) -> None:
         if args.ob1_attention_skew
         else (3.0, 4.0)
     )
+    landscape_sigma_values = None
+    if getattr(args, "with_sigma_landscape", False):
+        landscape_sigma_min = getattr(args, "landscape_sigma_min", 0.1)
+        landscape_sigma_max = getattr(args, "landscape_sigma_max", 5.0)
+        landscape_points = getattr(args, "landscape_points", 41)
+        if (
+            not math.isfinite(landscape_sigma_min)
+            or not math.isfinite(landscape_sigma_max)
+            or landscape_sigma_min <= 0
+            or landscape_sigma_max <= landscape_sigma_min
+        ):
+            raise ValueError(
+                "Landscape sigma bounds must satisfy 0 < min < max"
+            )
+        if landscape_points < 3:
+            raise ValueError("Landscape points must be at least three")
+        landscape_sigma_values = np.geomspace(
+            landscape_sigma_min,
+            landscape_sigma_max,
+            landscape_points,
+        )
     artifacts = compare_attention_profiles(
         passages,
         pd.read_csv(token_path),
@@ -1329,6 +1355,12 @@ def command_compare_attention_profile(args: argparse.Namespace) -> None:
         seed=args.seed,
         trajectory_attention_skew=trajectory_attention_skew,
         candidate_support_policy=args.candidate_support_policy,
+        landscape_sigma_values=landscape_sigma_values,
+        skip_support_rms_displacement_controls=getattr(
+            args,
+            "skip_support_rms_displacement_controls",
+            False,
+        ),
     )
     artifacts["audit"].update(
         {
@@ -1731,6 +1763,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     attention.add_argument(
+        "--skip-support-rms-displacement-controls",
+        action="store_true",
+        help=(
+            "Omit the two post hoc controls whose scales are matched to each "
+            "learned kernel on the evaluation fixation supports."
+        ),
+    )
+    attention.add_argument(
         "--bootstrap-samples",
         type=int,
         default=10000,
@@ -1740,6 +1780,29 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     attention.add_argument("--seed", type=int, default=20260725)
+    attention.add_argument(
+        "--with-sigma-landscape",
+        action="store_true",
+        help=(
+            "Evaluate pooled descriptive metrics over a log-spaced "
+            "sigma_left by sigma_right grid."
+        ),
+    )
+    attention.add_argument(
+        "--landscape-sigma-min",
+        type=float,
+        default=0.1,
+    )
+    attention.add_argument(
+        "--landscape-sigma-max",
+        type=float,
+        default=5.0,
+    )
+    attention.add_argument(
+        "--landscape-points",
+        type=int,
+        default=41,
+    )
     attention.set_defaults(handler=command_compare_attention_profile)
 
     run = subparsers.add_parser("run")
