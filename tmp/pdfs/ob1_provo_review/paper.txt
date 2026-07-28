@@ -1,0 +1,1519 @@
+=== PAGE 1 ===
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOS   COMPUTATIONAL         BIOLOGY                                           
+                                                                                    
+                                                                                    
+                                                                                    
+                            RESEARCHARTICLE                                         
+                            Language   models   outperform    cloze                 
+                                                                                    
+                            predictability in a cognitive model   of reading        
+                                                                                    
+                                                                                    
+                            AdrielliTinaLopesRegoID 1*,JoshuaSnell2,MartijnMeeter1  
+                            1 DepartmentofEducation,VrijeUniversiteitAmsterdam,andLEARN!ResearchInstitute,Amsterdam,The
+                            Netherlands,2 DepartmentofExperimentalandAppliedPsychology,VrijeUniversiteitAmsterdam,
+                            Amsterdam,TheNetherlands                                
+                            *a.t.lopesrego@vu.nl                                    
+                                                                                    
+     a1111111111                                                                    
+     a1111111111                                                                    
+                            Abstract                                                
+     a1111111111                                                                    
+     a1111111111                                                                    
+                            Althoughwordpredictabilityiscommonlyconsideredanimportantfactorinreading,sophis-
+     a1111111111                                                                    
+                            ticatedaccountsofpredictabilityintheoriesofreadingarelacking.Computationalmodelsof
+                            readingtraditionallyuseclozenormingasaproxyofwordpredictability,butwhatcloze
+                            normspreciselycaptureremainsunclear.Thisstudyinvestigateswhetherlargelanguage
+                            models(LLMs)canfillthisgap.Contextualpredictionsareimplementedviaanovelparallel-
+       OPENACCESS                                                                   
+                            gradedmechanism,whereallpredictedwordsatagivenpositionarepre-activatedasa
+     Citation:LopesRegoAT,SnellJ,MeeterM(2024)                                      
+                            functionofcontextualcertainty,whichvariesdynamicallyastextprocessingunfolds.
+     Languagemodelsoutperformclozepredictabilityin                                  
+                            ThroughreadingsimulationswithOB1-reader,acognitivemodelofwordrecognitionand
+     acognitivemodelofreading.PLoSComputBiol                                        
+     20(9):e1012117.https://doi.org/10.1371/journal. eye-movementcontrolinreading,wecomparethemodel’sfittoeye-movementdatawhen
+     pcbi.1012117           usingpredictabilityvaluesderivedfromaclozetaskagainstthosederivedfromLLMs(GPT-
+     Editor:RonaldvandenBerg,Stockholm 2andLLaMA).RootMeanSquareErrorbetweensimulatedandhumaneyemovements
+     University,SWEDEN      indicatesthatLLMpredictabilityprovidesabetterfitthancloze.Thisisthefirststudytouse
+     Received:April26,2024  LLMstoaugmentacognitivemodelofreadingwithhigher-orderlanguageprocessingwhile
+                            proposingamechanismontheinterplaybetweenwordpredictabilityandeyemovements.
+     Accepted:September9,2024                                                       
+     Published:September25,2024                                                     
+     PeerReviewHistory:PLOSrecognizesthe                                            
+     benefitsoftransparencyinthepeerreview                                          
+                             Authorsummary                                          
+     process;therefore,weenablethepublicationof                                     
+     allofthecontentofpeerreviewandauthor                                           
+                             Readingcomprehensionisacrucialskillthatishighlypredictiveoflatersuccessineduca-
+     responsesalongsidefinal,publishedarticles.The                                  
+                             tion.Oneaspectofefficientreadingisourabilitytopredictwhatiscomingnextinthe
+     editorialhistoryofthisarticleisavailablehere:                                  
+                             textbasedonthecurrentcontext.Althoughweknowpredictionstakeplaceduringread-
+     https://doi.org/10.1371/journal.pcbi.1012117                                   
+                             ing,themechanismthroughwhichcontextualfacilitationaffectsoculomotorbehaviourin
+     Copyright:©2024LopesRegoetal.Thisisan                                          
+                             readingisnotyetwell-understood.Here,wemodelthismechanismandtestdifferent
+     openaccessarticledistributedunderthetermsof                                    
+                             measuresofpredictability(computationalvs.empirical)bysimulatingeyemovements
+     theCreativeCommonsAttributionLicense,which                                     
+     permitsunrestricteduse,distribution,and withacognitivemodelofreading.Ourresultssuggestthat,whenimplementedwithour
+     reproductioninanymedium,providedtheoriginal novelmechanism,acomputationalmeasureofpredictabilityprovidesbetterfitstoeye
+     authorandsourcearecredited. movementsinreadingthanatraditionalempiricalmeasure.Withthismodel,wescruti-
+     DataAvailabilityStatement:Alltherelevantdata nizehowpredictionsaboutupcominginputaffectseyemovementsinreading,andhow
+     andsourcecodeusedtoproducetheresultsand computationalapproachestomeasuringpredictabilitymaysupporttheorytesting.Model-
+     analysespresentedinthismanuscriptareavailable lingaspectsofreadingcomprehensionandtestingthemagainsthumanbehaviourcon-
+     onaGithubrepositoryathttps://github.com/                                       
+                             tributestotheeffortofadvancingtheorybuildinginreadingresearch.Inthelongerterm,
+     dritlopes/OB1-reader-model.                                                    
+     PLOSComputationalBiology|https://doi.org/10.1371/journal.pcbi.1012117 September25,2024 1/24
+
+=== PAGE 2 ===
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOS COMPUTATIONAL BIOLOGY                         Languagemodelsoutperformclozepredictability
+                                                                                    
+                                                                                    
+     Funding:Thisstudywassupportedbythe                                             
+     NederlandseOrganisatievoorWetenschappelijk moreunderstandingofreadingcomprehensionmayhelpimprovereadingpedagogies,
+     Onderzoek(NWO)OpenCompetition-SSH(Social diagnosesandtreatments.               
+     SciencesandHumanities)(https://www.nwo.nl),                                    
+     406.21.GO.019toMM.Thefundershadnorolein                                        
+     studydesign,datacollectionandanalysis,decision                                 
+     topublish,orpreparationofthemanuscript.                                        
+                            Introduction                                            
+     Competinginterests:Theauthorsdeclarethatno                                     
+     competinginterestsexist. Humanscanreadremarkablyefficiently.Whatunderliesefficientreadinghasbeensubjectof
+                            considerableinterestinpsycholinguisticresearch.Aprominenthypothesisisthatwecangen-
+                            erallykeepupwiththerapidpaceoflanguageinputbecauselanguageprocessingispredictive,
+                            i.e.,asreadingunfolds,thereaderanticipatessomeinformationabouttheupcominginput[1–
+                            3].Despitegeneralagreementthatthisisthecase,itremainsunclearhowtobestoperationa-
+                            lizecontextualpredictions[3,4].Incurrentmodelsofreading[5–9]),theinfluenceofprior
+                            contextonwordrecognitionisoperationalizedusingclozenorming,whichistheproportion
+                            ofparticipantsthatcompleteatextualsequencebyansweringagivenword.However,cloze
+                            norminghasboththeoreticalandpracticallimitations,whichareoutlinedbelow[4,10,11].To
+                            addresstheseconcerns,inthepresentworkweexploretheuseofLargeLanguageModels
+                            (LLMs)asanalternativemeanstoaccountforcontextualpredictionsincomputationalmodels
+                            ofreading.Intheremainderofthissection,wediscussthelimitationsofthecurrentimple-
+                            mentationofcontextualpredictionsinmodelsofreading,whichincludestheuseofcloze
+                            norming,aswellasthepotentialbenefitsofLLMoutputsasaproxyofwordpredictability.We
+                            alsoofferanovelparsimoniousaccountofhowthesepredictionsgraduallyunfoldduringtext
+                            processing.                                             
+                             Computationalmodelsofreadingareformalizedtheoriesaboutthecognitivemechanisms
+                            thatmaytakeplaceduringreading.Themostprominenttypeofmodelaremodelsofeye-
+                            movementcontrolintextreading(see[12]foradetailedoverview).Theseattempttoexplain
+                            howthebrainguidestheeyes,bycombiningperceptual,oculomotor,andlinguisticprocesses.
+                            Despitethesuccessofthesemodelsinsimulatingsomeword-leveleffectsonreadingbehav-
+                            iour,theimplementationofcontextualinfluencesontherecognitionofincominglinguistic
+                            inputisyetlargelysimplified.Wordpredictabilityaffectslexicalaccessoftheupcomingword
+                            bymodulatingeitheritsrecognitionthreshold(e.g.E-ZReader[5]andOB1-reader[6])orits
+                            activation(e.g.SWIFT[7]).Thisprocessisembeddedinthe“familiaritycheck”oftheE-Z
+                            Readermodelandthe“rateofactivation”intheSWIFTmodel.Onecommonassumption
+                            amongmodelsisthattheeffectofpredictabilitydependsoncertainword-processingstages.In
+                            thecaseoftheE-ZReadermodel,theeffectofpredictabilityofwordnonitsfamiliaritycheck
+                            dependsonthecompletionof“lexicalaccess”ofwordn-1.Thatis,predictabilityofwordn
+                            facilitatesitsprocessingonlyiftheprecedingwordhasbeencorrectlyrecognizedandinte-
+                            gratedintothecurrentsentencerepresentation[13].InthecaseoftheSWIFTmodel,themod-
+                            ulationofpredictabilityontherateofactivationofwordndependsonwhethertheprocessing
+                            ofwordnisonits“parafovealpreprocessing”stage,whereactivationincreasesmoreslowly
+                            thehigherthepredictability,orits“lexicalcompletion”stage,whereactivationdecreasesmore
+                            slowlythehigherthepredictability[12].Thesemodelsignorethepredictabilityofwordsthat
+                            donotappearinthestimulustext,eventhoughtheymayhavebeenpredictedatagiventext
+                            positionandassumeaone-to-onematchbetweentheinputandtheactualtextforcomputing
+                            predictabilityvalues.Becausethemodelsdonotprovideadeeperaccountoflanguageprocess-
+                            ingatthesyntacticandsemanticlevels,theycannotallowpredictabilitytovarydynamicallyas
+                            textprocessingunfolds.Instead,predictabilityiscomputedpriortothesimulationsandfixed.
+                             Whatismore,thepre-determined,fixedpredictabilityvalueinsuchmodelsisconvention-
+                            allyoperationalizedwithclozenorming[14].Clozepredictabilityisobtainedbyhaving
+                                                                                    
+     PLOSComputationalBiology|https://doi.org/10.1371/journal.pcbi.1012117 September25,2024 2/24
+                                                                                    
+
+=== PAGE 3 ===
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOS COMPUTATIONAL BIOLOGY                         Languagemodelsoutperformclozepredictability
+                                                                                    
+                                                                                    
+                            participantswritecontinuationsofanincompletesequence,andthentakingtheproportionof
+                            participantsthathaveansweredagivenwordastheclozeprobabilityofthatword.The
+                            assumptionisthattheparticipantsdrawontheirindividuallexicalprobabilitydistributionsto
+                            fillintheblank,andthatclozereflectssomeoverallsubjectiveprobabilitydistribution.For
+                            example,housemaybemoreprobablethanplacetocompleteImethimatmyforparticipant
+                            A,butnotforparticipantB.However,scientistshavequestionedthisassumption[4,10,11].
+                            Theclozetaskisanofflineanduntimedtask,leavingampleroomforparticipantstocon-
+                            sciouslyreflectonsequencecompletionandadoptstrategicdecisions[4].Thismaybequite
+                            differentfromnormalreadingwhereonly~200msisspentoneachword[15].Anotherissueis
+                            thatclozecannotprovideestimatesforlow-probabilitycontinuations,incontrastwithbeha-
+                            viouralevidenceshowingpredictabilityeffectsofwordsthatneverappearamongcloze
+                            responses,basedonotherestimators,suchaspart-of-speech[10,16].Thus,clozecompletions
+                            likelydonotperfectlymatchtherapidpredictionsthataremadeonlineasreadingunfolds.
+                             PredictabilityvaluesgeneratedbyLLMsmaybeasuitablemethodologicalalternativeto
+                            clozecompletionprobabilities.LLMsarecomputationalmodelswhosetaskistoassignproba-
+                            bilitiestosequencesofwords[17].Suchmodelsaretraditionallytrainedtoaccuratelypredicta
+                            tokengivenitscontextualsequence,similarlytoaclozetask.Animportantdifference,how-
+                            ever,isthatwhereasclozeprobabilityisanaverageacrossparticipants,probabilitiesderived
+                            fromLLMsarerelativetoeveryotherwordinthemodel’svocabulary.ThisallowsLLMsto
+                            bettercapturetheprobabilityofwordsthatrarelyorneverappearamongclozeresponses,
+                            potentiallyrevealingvariationinthelowerrange[18].Inaddition,LLMsmayofferabetter
+                            proxyofsemanticandsyntacticcontextualeffects,astheycomputationallydefinepredictabil-
+                            ityandhowitislearnedfromexperience.Themodellearnslexicalknowledgefromthetextual
+                            data,whichcanbeseenasanalogoustothelanguageexperienceofhumans.Themeaningof
+                            wordsaredeterminedbythecontextsinwhichtheyappear(distributionalhypothesis[19])and
+                            theconsolidatedknowledgeisusedtopredictthenextlexicaliteminasequence[11].The
+                            advantageoflanguagemodelsinestimatingpredictabilityisalsopractical:ithasbeenspecu-
+                            latedthatmillionsofsamplespercontextwouldbeneededinaclozetasktoreachthepreci-
+                            sionoflanguagemodelsinreflectinglanguagestatistics[20],whichishardlyfeasible.And
+                            evenifsuchanextremelylargesamplewouldbereached,wewouldstillneedtheassumption
+                            thatcloze-derivedpredictionsmatchreal-timepredictionsinlanguagecomprehension,which
+                            isquestionable[4,21].                                   
+                             Importantly,languagemodelshavebeenshowntoperformaswellas,orevenoutperform,
+                            predictabilityestimatesderivedfromclozetasksinfittingreadingdata.Shainandcolleagues
+                            [20]foundrobustwordpredictabilityeffectsacrosssixcorporaofeye-movementsusingsur-
+                            prisalestimatesfromvariouslanguagemodels,withGPT-2providingthebestfit.Theeffect
+                            wasqualitativelysimilarwhenusingclozeestimatesinthecorpusforwhichtheywereavail-
+                            able.AnothercompellingbitofevidencecomesfromHofmannandcolleagues[11],whocom-
+                            paredclozecompletionprobabilitieswiththreedifferentlanguagemodels(ngrammodel,
+                            recurrentneuralnetworkandtopicmodel)inpredictingeyemovements.Theytestedthe
+                            hypothesisthateachlanguagemodelismoresuitableforcapturingadifferentcognitivepro-
+                            cessinreading,whichinturnisreflectedbyearlyversuslateeye-movementmeasures.Item-
+                            levelanalysesshowedthatthecorrelationsofeacheyemovementmeasurewerestrongerwith
+                            eachlanguagemodelthanwithcloze.Inaddition,fixation-eventbasedanalysesrevealedthat
+                            thengrammodelbettercapturedlageffectsonearlymeasures(replicatingtheresultsfrom
+                            SmithandLevy[10]),whiletherecurrentneuralnetworkmoreconsistentlyyieldedlageffects
+                            onlatemeasure.Amorerecentstudy[22]foundneuralevidencefortheadvantageoflanguage
+                            modelsovercloze,byshowingthatpredictionsfromLLMs(GPT-3,ROBERTaandALBERT)
+                            matchedN400amplitudesmorecloselythancloze-derivedpredictions.Suchevidencehasled
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOSComputationalBiology|https://doi.org/10.1371/journal.pcbi.1012117 September25,2024 3/24
+                                                                                    
+
+=== PAGE 4 ===
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOS COMPUTATIONAL BIOLOGY                         Languagemodelsoutperformclozepredictability
+                                                                                    
+                                                                                    
+                            tothebeliefthatlanguagemodelsmaybesuitablefortheorydevelopmentinmodelsofeye-
+                            movementcontrolinreading[11].                           
+                             Thepresentstudymarksanimportantstepinexploringthepotentialoflanguagemodelsin
+                            advancingourunderstandingofthereadingbrain[23,24],andmorespecifically,ofLLMs’
+                            abilitytoaccountforcontextualpredictionsinmodelsofeye-movementcontrolinreading
+                            [11].Weinvestigatewhetheramodelofeye-movementcontrolinreadingcanmoreaccurately
+                            simulatereadingbehaviourusingpredictabilityderivedfromtransformer-basedLLMsor
+                            fromcloze.WehypothesizethatLLM-derivedprobabilitiescapturesemanticandsyntactic
+                            integrationofthepreviouscontext,whichinturnaffectsprocessingofupcomingbottom-up
+                            input.Thiseffectisexpectedtobecapturedintheearlyreadingmeasures(seeMethods).Since
+                            predictabilitymayalsoreflectsemanticandsyntacticintegrationofthepredictedwordwith
+                            thepreviouscontext[18],latemeasuresarealsoevaluated.    
+                             Importantlyhowever,employingLLM-generatedpredictionsisonlyonepartofthestory.
+                            Acognitivetheoryofreadingalsohastomakeclearhowthosepredictionsoperateprecisely:
+                            i.e.,when,where,how,andwhydopredictionsaffectprocessingofupcomingtext?Theafore-
+                            mentionedmodelshavebeenagnosticaboutthis.Aimingtofillthisgap,ouranswer,asimple-
+                            mentedintheupdatedOB1-readermodel,isasfollows.          
+                             Weproposethatmakingpredictionsaboutupcomingwordsaffectstheirrecognition
+                            throughgradedandparallelactivation.Predictabilityisgradedbecauseitmodulatesactivation
+                            ofallwordspredictedtobeatagivenpositionintheparafoveatotheextentofeachword’s
+                            likelihood.Thismeansthathigherpredictabilityleadstoastrongeractivationofallwordspre-
+                            dictedtobeatagivenpositionintheparafovea.Predictabilityisalsoparallel,becausepredic-
+                            tionscanbemadeaboutmultipletextpositionssimultaneously.Notethatthisisinlinewith
+                            theparallelstructureoftheOB1-reader,andthisisanimportantcontrastingpointwithserial
+                            processingmodels,suchasE-ZReader,whichassumethatwordsareprocessedoneatatime.
+                            Thepredictabilitymechanismasproposedhereisthus,inprinciple,notcompatiblewithserial
+                            modelsofwordprocessing.Witheachprocessingcycle,thispredictability-derivedactivation
+                            issummedtotheactivityresultingfromvisualprocessingofthepreviouscycleandweighted
+                            bythepredictabilityofthepreviousword,whichinturnreflectsthepredictioncertaintyupto
+                            thecurrentcycle(seeMethodsformoredetailedexplanation).Inthisway,predictabilitygrad-
+                            uallyanddynamicallyaffectswordsinparallel,includingnon-textwordsinthemodel’s
+                            lexicon.                                                
+                             Importantly,theaccountofpredictabilityaspredictiveactivationproposedherediverges
+                            fromtheproportionalpre-activationaccountofpredictabilitybyBrothersandKuperberg[25]
+                            intwoways.First,theydefinepredictivepre-activationastheactivationoflinguisticfeatures
+                            (orthographic,syntacticandsemantic).However,theevidenceismixedastowhetherwepre-
+                            dictspecificwords[10]ormoreabstractcategories[26].Expectationsarelikelybuiltaboutdif-
+                            ferentlevelsoflinguisticrepresentations,butherepredictiveactivationislimitedtowords,
+                            andthisactivationisroughlyproportionaltoeachword’spredictability(thusweagreewith
+                            theproportionalitysuggestedbyBrothersandKuperberg[25]).Second,predictiveactivation
+                            wouldbepriortotheword’savailabilityinthebottom-upinput.Wenotethatpredictability
+                            withoutparafovealpreviewisdebatable.Moststudiesclaimthatpredictabilityeffectsonly
+                            occurwithparafovealpreview[27],butParkerandcolleagues[28]showedpredictability
+                            effectswithoutparafovealpreviewusinganovelexperimentalparadigm.InOB1-reader,pre-
+                            dictionsaremadeaboutwordswithinparafovealpreview,whichmeansthatbottom-upinput
+                            isavailablewhenpredictionsaremadeaboutwordsintheparafovea.SinceOB1-readerpro-
+                            cessesmultiplewordsinparallel,predictionsaregeneratedabouttheidentityofallwordsin
+                            theparafoveawhiletheirorthographicinputisbeingprocessedandtheirrecognitionhasnot
+                            beencompleted.                                          
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOSComputationalBiology|https://doi.org/10.1371/journal.pcbi.1012117 September25,2024 4/24
+                                                                                    
+
+=== PAGE 5 ===
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOS COMPUTATIONAL BIOLOGY                         Languagemodelsoutperformclozepredictability
+                                                                                    
+                                                                                    
+                             Insum,themodelassumptionsregardingpredictabilityincludepredictabilitybeing:(i)
+                            graded,i.e.morethanonewordcanbepredictedateachtextposition;(ii)parallel,i.e.predic-
+                            tionscanbemadeaboutmultipletextpositionssimultaneously;(iii)parafoveal,i.e.predictions
+                            aremadeaboutthewordsintheparafovea;(iv)dynamic,i.e.predictabilityeffectschange
+                            accordingtothecertaintyofthepredictionspreviouslymade;and(v)lexical,i.e.predictions
+                            aremadeaboutwordsasdefinedbytextspacesandnotaboutotherabstractcategories.
+                             Assumingthatpredictabilityduringreadingisgraded,parallel,parafoveal,dynamic,and
+                            lexical,wehypothesizethatOB1-readerachievesabetterfittohumanoculomotordatawith
+                            LLM-derivedpredictionsthanwithcloze-derivedpredictions.Totestthishypothesis,weran
+                            readingsimulationswithOB1-readereitherusingLLM-derivedpredictabilityorcloze-derived
+                            predictabilitytoactivatewordsinthemodel’slexiconpriortofixation.Theresultingreading
+                            measureswerecomparedwithmeasuresderivedfromeye-trackingdatatoevaluatethemod-
+                            el’sfittohumandata.Toourknowledge,thisisthefirststudytocombinealanguagemodel
+                            withacomputationalcognitivemodelofeye-movementcontrolinreadingtotestwhetherthe
+                            outputofLLMsisasuitableproxyforwordpredictabilityinsuchmodels.
+                                                                                    
+                            Results                                                 
+                                                                                    
+                            Forthereadingsimulations,weusedOB1-reader[6](seeModelDescriptioninMethodsfor
+                            moredetailsonthismodel).IneachprocessingcyclefromOB1-reader’sreadingsimulation,
+                            thepredictabilityvalueswereusedtoactivatethepredictedwordsintheupcomingposition
+                            (seePredictabilityImplementationinMethodsforadetaileddescription).Eachsimulation
+                            consistedinprocessingallthe55passagesfromtheProvoCorpus[29](seeEye-trackingand
+                            ClozeNorminginMethodsformoredetailsonthematerials).Thepredictabilityvalueswere
+                            derivedfromthreedifferentestimators:cloze,GPT-2[30]andLLaMA[31].Theclozevalues
+                            weretakenfromtheProvoCorpus(seeEye-trackingandClozeNorminginMethodsformore
+                            detailsonClozeNorming).TheLLMvaluesweregeneratedfromGPT-2andLLaMA.We
+                            comparetheperformanceofasimplertransformer-basedlanguagemodel,i.e.GPT-2,witha
+                            morecomplexone,i.e.LLaMA.Bothmodelsaretransformer-based,auto-regressiveLLMs,
+                            whichdifferinsizeandnext-wordpredictionaccuracy,amongotheraspects.Theversionof
+                            GPT-2usedhas124millionparametersand50kvocabularysize.TheversionofLLaMAused
+                            hasamuchhighernumberofparameters,7billion,butasmallervocabularysize,32k.Impor-
+                            tantly,LLaMAyieldsahighernext-wordpredictionaccuracyontheProvopassages,76%
+                            against64%byGPT-2(seeLanguageModelsinMethodsformoredetailsonthesemodels).
+                             Weran100simulationsperconditionina“3x3+1”design:threepredictabilityestimators
+                            (cloze,GPT-2andLLaMA),threepredictabilityweights(low=0.05,medium=0.1,and
+                            high=0.2)andabaseline(nopredictability).Fortheanalysis,weconsideredeye-movementmea-
+                            suresatword-level.Theearlyeye-movementmeasuresofinterestwere(i)skipping,i.e.thepropor-
+                            tionofparticipantswhoskippedthewordonfirstpass;(ii)firstfixationduration,i.e.theduration
+                            ofthefirstfixationontheword;and(iii)gazeduration,i.e.thesumoffixationsonthewordbefore
+                            theeyesmoveforward.Thelateeye-movementmeasuresofinterestwere(iv)totalreadingtime,
+                            i.e.thesumoffixationdurationsontheword;and(v)regression,i.e.theproportionofparticipants
+                            whofixatedthewordaftertheeyeshavealreadypassedthetextregionthewordislocated.
+                             Toevaluatethemodelsimulations,weusedthereadingtimedatafromtheProvocorpus
+                            [29]andcomputedtheRootMeanSquaredError(RMSE)betweeneacheye-movementmea-
+                            surefromeachsimulationbyOB1-readerandeacheye-movementmeasurefromtheProvo
+                            corpusaveragedoverparticipants.Tocheckwhetherthesimulatedeyemovementsacross
+                            predictabilityestimatorsweresignificantlydifferent(p<=.05),werantheWilcoxonT-test
+                            fromtheScipypythonlibrary.                              
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOSComputationalBiology|https://doi.org/10.1371/journal.pcbi.1012117 September25,2024 5/24
+                                                                                    
+
+=== PAGE 6 ===
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOS COMPUTATIONAL BIOLOGY                         Languagemodelsoutperformclozepredictability
+                                                                                    
+                                                                                    
+                             Inaddition,weconductedasystematicanalysisonthehitsandfailuresofthesimulation
+                            modelacrosspredictabilityconditionstobetterunderstandwhatdrivesthedifferencesin
+                            modelfitbetweenLLMsandclozepredictability.Theanalysisconsistedofcomparingsimu-
+                            latedeyemovementsandempiricaleyemovementsondifferentword-basedfeatures,namely
+                            length,frequency,predictability,wordid(positioninthesentence),andwordtype(content,
+                            function,andother).Inparticular,wordtypewasdefinedaccordingtotheword’spart-of-
+                            speechtag.Forinstance,verbs,adjectives,andnounswereconsideredcontentwords,whereas
+                            articles,particles,andpronounswereconsideredfunctionwords(seeReadingSimulationsin
+                            Methodsformoredetails).                                 
+                                                                                    
+                            Fitacrosseye-movementmeasures                           
+                                                                                    
+                            Inlinewithourhypotheses,OB1-readersimulationswereclosertothehumaneye-movements
+                            withLLMpredictabilitythanwithclozepredictability.Fig1showsthestandardizedRMSEof
+                            eachconditionaveragedovereyemovementmeasuresandpredictabilityweights.Toattestthe
+                            predictabilityimplementationproposedinOB1-reader,wecomparedtheRMSEscores
+                            betweenpredictabilityconditionsandbaseline.Allpredictabilityconditionsreducedtheerror
+                            relativetothebaseline,whichconfirmsthefavourableeffectofwordpredictabilityonfitting
+                            word-leveleyemovementmeasuresinOB1-reader.WhencomparingtheRMSEscoresacross
+                            predictabilityconditions,thelargerlanguagemodelLLaMAyieldedtheleasterror.When
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+             Fig1.StandardizedRMSEscoresofOB1Readersimulationsforabaselinewithoutusingwordpredictions,forcloze-normpredictionsand
+             predictionsfromtheGPT-2andLLaMALLMs.RMSEscoresarestandardizedusingthehumanaveragesandstandarddeviationsasreference.The
+             minimumRMSEvalueis1,meaningnodifferencebetweeneyemovementsfromcorpusandeyemovementsfromsimulations.Eachdatapointhere
+             representstheRMSEscoreofonesimulationaveragedoverwords.                
+             https://doi.org/10.1371/journal.pcbi.1012117.g001                      
+                                                                                    
+                                                                                    
+     PLOSComputationalBiology|https://doi.org/10.1371/journal.pcbi.1012117 September25,2024 6/24
+                                                                                    
+
+=== PAGE 7 ===
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOS COMPUTATIONAL BIOLOGY                         Languagemodelsoutperformclozepredictability
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                            Fig2.StandardizedRMSEscoresofOB1-readersimulationsperconditionandpredictabilityweight.RMSE
+                            scoresaveragedovereyemovementmeasures.*meansp-value<=.05,**meansp-value<=.01,and***meansp-
+                            value<=.001.                                            
+                            https://doi.org/10.1371/journal.pcbi.1012117.g002       
+                            comparingtheerroramongpredictabilityweights(seeFig2),LLaMAyieldedtheleasterrorin
+                            allweightconditions,whileGPT-2producedlesserrorthanclozeonlywiththelowpredict-
+                            abilityweight.Theseresultssuggestthatlanguagemodels,especiallywithahigherparameter
+                            countandpredictionaccuracy,aregoodwordpredictabilityestimatorsformodellingeye
+                            movementsinreading[32].Notethatthemodel’saveragewordrecognitionaccuracywassta-
+                            bleacrosspredictabilityconditions(cloze=.91;GPT-2=.92;LLaMA=.93).Wenowturnto
+                            theresultsforeachindividualtypeofeyemovement(Fig3).     
+                                                                                    
+                            Firstfixationduration                                   
+                                                                                    
+                            RMSEscoresforitem-levelfirstfixationdurationrevealedthatpredictabilityfromLLaMA
+                            yieldedthebestfitcomparedtoGPT-2andcloze.LLaMAalsoyieldedtheleasterrorineach
+                            weightcondition(seeFig4A).Whencomparingsimulatedandobservedvalues(S1Fig),firstfix-
+                            ationdurationsareconsistentlylongerinthemodelsimulations.Asforpredictabilityeffects(S1
+                            Fig),therelationbetweenpredictabilityandfirstfixationdurationseemedtobeweaklyfacilita-
+                            tory,withmorepredictabilityleadingtoslightlyshorterfirstfixationdurationinboththeProvo
+                            CorpusandtheOB1-readersimulations.Thisrelationoccurredinallpredictabilityconditions,
+                            suggestingthattheLLMscaptureasimilarrelationbetweenpredictabilityandeyemovementsas
+                            clozenorming,andthatthisrelationalsoexistforeyemovementsintheProvoCorpus.
+                             Oursystematicanalysisshowedthat,acrosspredictabilityconditions,themodelgenerated
+                            moreerrorwithlonger,infrequent,morepredictable,aswellastheinitialwordsofthepassage
+                            comparedtothefinalwords(S2Fig).Moreimportantly,theadvantageofLLaMArelativeto
+                            theotherpredictabilityconditionsinfittingfirstfixationdurationseemstostemfromLLaMA
+                            providingbetterfitsforhighlypredictablewords.Whencomparingsimulatedandhumanfirst
+                            fixationdurations(S3Fig),weobservedthatthedifference(i.e.simulateddurationsarelon-
+                            ger)ismorepronouncedforlongerandinfrequentwords.Anotherobservationisthat,across
+                            predictabilityconditions,themodelfailstocapturewrap-upeffects(i.e.longerreactiontimes
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOSComputationalBiology|https://doi.org/10.1371/journal.pcbi.1012117 September25,2024 7/24
+                                                                                    
+
+=== PAGE 8 ===
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOS COMPUTATIONAL BIOLOGY                         Languagemodelsoutperformclozepredictability
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          Fig3.StandardizedRMSEscoresofOB1-readersimulationsperconditionforeacheyemovementmeasure.Inthey-axis,eyemovementmeasuresare
+          representedwiththeabbreviationsSK(skipping),FFD(firstfixationduration),GD(gazeduration),TRT(totalreadingtime),andRG(regression).
+          https://doi.org/10.1371/journal.pcbi.1012117.g003                         
+                                                                                    
+                            towardstheendofthesequence),whichseemstooccurinthehumandata,butnotinthe
+                            modeldata.                                              
+                                                                                    
+                            Gazeduration                                            
+                            LLaMAproducedtheleastaveragederrorinfittinggazeduration.GPT-2producedeithersimi-
+                            larfitstoclozeoraslightlyworsefitthancloze(seeFig4B).Allpredictabilityconditionsreduce
+                            errorcomparedtothebaseline,confirmingthebenefitofwordpredictabilityforpredicting
+                            gazeduration.Higherpredictabilityshortenedgazeduration(S4Fig)inboththemodelsimula-
+                            tions(OB1-reader)andintheempiricaldata(ProvoCorpus),and,similarlytofirstfixation
+                            duration,simulatedgazedurationswereconsistentlylongerthantheobservedgazedurations.
+                            Alsoconsistentwithfirstfixationdurations,moreerrorisobservedforlonger,infrequent
+                            words.However,differentlyfromthepatternobservedwithfirstfixationduration,gazedura-
+                            tionsarebetterfitbythemodelformorepredictablewordsandinitialwordsinapassage.
+                            LLMs,especiallyLLaMA,generateslightlylesserroracrosspredictabilityvalues,andLLaMAis
+                            slightlybetteratfittinggazedurationsofwordspositionedclosertotheendofthepassages(S5
+                            Fig).Simulatedvaluesarelongerthanhumanvalues,especiallywithlongwords(S6Fig).
+                                                                                    
+                            Skipping                                                
+                                                                                    
+                            Unexpectedly,skippingratesshowedincreasingerrorwithpredictabilitycomparedtothe
+                            baseline.RMSEscoreswerehigherintheLLaMAconditionforallweights(seeFig4C).These
+                            resultsshownoevidenceofskippingbeingmoreaccuratelysimulatedwithanyofthe
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOSComputationalBiology|https://doi.org/10.1371/journal.pcbi.1012117 September25,2024 8/24
+                                                                                    
+
+=== PAGE 9 ===
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOS COMPUTATIONAL BIOLOGY                         Languagemodelsoutperformclozepredictability
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          Fig4.StandardizedRMSEscoresofOB1-readersimulationspercondition,eyemovementmeasureandpredictabilityweight.*meansp-value<=.05,**
+          meansp-value<=.01,and***meansp-value<=.001.aRMSEscoresforfirstfixationduration.bRMSEscoresforgazeduration.cRMSEscoresfor
+          skippingrates.dRMSEscoresfortotalreadingtime.eRMSEscoresforregressionrates.
+          https://doi.org/10.1371/journal.pcbi.1012117.g004                         
+                            predictabilityestimationstestedinthisstudy.WhileOB1-readerproducedsizablepredictabil-
+                            ityeffectsonskippingrates,theseeffectsseemtobeveryslightintheempiricaldata(S7Fig).
+                            Anotherunexpectedresultwasageneraltrendforproducingmoreerrorforshort,frequent
+                            andpredictablewords,withLLaMAgeneratingmoreerrorinfittinghighlypredictablewords
+                            thanGPT-2andcloze(S8Fig).Moreover,themodelgeneratedmoreerrorinfittingfunction
+                            wordsthancontentwords,whichistheinversetrendrelativetoreadingtimes,forwhichmore
+                            errorisobservedwithcontentwordsthanfunctionwords(S9Fig).Acloserinspectionofthis
+                            patternrevealsthatthemodelskipsgenerallylessthanhumans;especiallylonger,infrequent,
+                            andfinalcontentwords.However,thereverseisseenforfunctionwords,whichthemodel
+                            skipsmoreoftenthanhumansdo(S10Fig).                     
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOSComputationalBiology|https://doi.org/10.1371/journal.pcbi.1012117 September25,2024 9/24
+                                                                                    
+
+=== PAGE 10 ===
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOS COMPUTATIONAL BIOLOGY                         Languagemodelsoutperformclozepredictability
+                                                                                    
+                                                                                    
+                            Totalreadingtime                                        
+                            ImprovementinRMSErelativetothebaselinewasseenfortotalreadingtimeinallconditions.
+                            LLaMAshowedthebestperformance,withlowererrorcomparedtoclozeandGPT-2,espe-
+                            ciallyinthelowandhighweightconditions(seeFig4D).Higherpredictabilityledtoshorter
+                            totalreadingtime,andthiswasreproducedbyOB1readerinallconditions.LLaMAshowed
+                            trendlinesfortherelationbetweenpredictabilityandtotalreadingtimethatparallelthose
+                            seeninthedata,suggestingabetterqualitativefitthanforeitherclozeorGPT-2(S11Fig).
+                            Similarlytotheerrorpatternswithgazeduration,themodelgeneratedmoreerrorwithlonger,
+                            infrequent,lesspredictableandfinalwordsacrosspredictabilityconditions(S12Fig).Also
+                            consistentwiththeresultsforgazeduration,totalreadingtimesfromthesimulationsarelon-
+                            gerthanthoseofhumans,particularlyforlongerandinfrequentwords(S13Fig).
+                                                                                    
+                            Regression                                              
+                                                                                    
+                            Lastly,RMSEforregressionwasreducedinallpredictabilityconditionscomparedtothebase-
+                            line.ThelowesterrorisgeneratedwithLLaMA-generatedwordpredictabilityacrosspredict-
+                            abilityweights(seeFig4E).Predictabilityeffectsonregressionareintheexpecteddirection,
+                            withhigherpredictabilityassociatedwithlowerregressionrate,butthiseffectisamplifiedin
+                            thesimulations(OB1-reader)relativetotheempiricaldata(ProvoCorpus)asindicatedbythe
+                            steepertrendlinesinthesimulatedregressionrates(S14Fig).Similarlytotheerrorpatterns
+                            forskipping,themodelgeneratedmoreerrorwithshorter,frequentandinitialwords.Incon-
+                            trast,errordecreasesaspredictabilityincreasesinthesimulationsbytheLLMs,especiallyby
+                            LLaMA,whichgeneratedlesserrorwithhighlypredictablewords(S15Fig).LLaMAisalso
+                            slightlybetteratfittingregressiontofunctionwords(S9Fig).Furthermore,fittingsimulated
+                            regressionratestowordlength,frequencyandpositionshowedsimilartrendsasfittingthe
+                            humanregressionrates,withsteepertrendlinesforthesimulatedvalues(S16Fig).
+                                                                                    
+                            Discussion                                              
+                            Thecurrentpaperisthefirsttorevealthatlargelanguagemodels(LLMs)cancomplement
+                            cognitivemodelsofreadingatthefunctionallevel.Whilepreviousstudieshaveshownthat
+                            LLMsprovidepredictabilityestimatesthatcanfitreadingbehaviourasgoodasorbetterthan
+                            clozenorming,herewegoastepfurtherbyshowingthatlanguagemodelsmayoutperform
+                            clozenormingwhenusedinacognitivemodelofreadingandtestedintermsofsimulation
+                            fits.OurresultssuggestthatLLMscanprovidethebasisforamoresophisticatedaccountof
+                            syntacticandsemanticprocessesinmodelsofreadingcomprehension.Wordpredictability
+                            fromlanguagemodelsimprovesfittoeye-movementsinreading.  
+                                                                                    
+                            Wordpredictabilityfromlanguagemodelsimprovesfittoeye-movements
+                            inreading                                               
+                                                                                    
+                            UsingpredictabilityvaluesgeneratedfromLLMs(especiallyLLaMA)toregulatewordactiva-
+                            tioninacognitivemodelofeye-movementcontrolinreading(OB1-reader)reducederror
+                            betweenthesimulatedeye-movementsandthecorpuseye-movements,relativetousingno
+                            predictabilityortousingclozepredictability.Lateeye-movementmeasures(totalreadingtime
+                            andregression)showedthemostbenefitinreducingerrorintheLLMpredictabilitycondi-
+                            tions,withdecreasingerrorthehigherthepredictabilityweight.Oneinterpretationofthis
+                            resultisthatpredictabilityreflectstheeaseofintegratingtheincomingbottom-upinputwith
+                            thepreviouslyprocessedcontext,withhighlypredictablewordsbeingmorereadilyintegrated
+                            withthepreviouslyprocessedcontextthanhighlyunpredictablewords[33].Weemphasize,
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOSComputationalBiology|https://doi.org/10.1371/journal.pcbi.1012117 September25,2024 10/24
+                                                                                    
+
+=== PAGE 11 ===
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOS COMPUTATIONAL BIOLOGY                         Languagemodelsoutperformclozepredictability
+                                                                                    
+                                                                                    
+                            however,thatwedonotimplementamechanismforwordintegrationorsentenceprocessing
+                            inOB1-reader,andsocannotsupportthisinterpretationfromthefindingsatthatlevel.
+                             Notably,thebenefitofpredictabilityislessclearforearlymeasures(skipping,firstfixation
+                            durationandgazeduration)thanforlatemeasuresacrossconditions.Themoremodestbene-
+                            ficialeffectofpredictabilityonsimulatingfirst-passreadingmaybeexplainedbycomparing
+                            simulatedandobservedvalues.WefoundthatOB1-readerconsistentlyprovideslongerfirst-
+                            fixationandgazedurations.Slowfirst-passreadingmightbeduetofreeparametersofthe
+                            modelnotyetbeingoptimallyfit.Estimatingparametersincomputationalcognitivemodelsis
+                            notasimpletask,particularlyformodelswithintractablelikelihoodforwhichcomputingthe
+                            datalikelihoodrequiresintegratingovervariousrules.Follow-upresearchshouldapplymore
+                            sophisticatedtechniquesformodelparameterfitting,forinstanceusingArtificialNeuralNet-
+                            works[34].                                              
+                             Moreover,predictabilitydidnotimprovethefittoskipping.Eventhoughaddingpredict-
+                            abilityincreasestheaverageskippingrate(whichcausesthemodeltobetterapproximatethe
+                            averageskippingrateofhumanreaders)therenonethelessappearstobeamismatchbetween
+                            themodelandthehumandataintermsofwhichindividualwordsareskipped.Onepotential
+                            explanationinvolvestheeffectofwordpredictabilityonskippingbeinglargerinOB1-reader
+                            thaninhumanreaders.Themodelskipshighlypredictablewordsmoreoftenthanhumans
+                            do.Thehighskippingrateseemstoberelatedtotherelativelyslowfirst-passreadingobserved
+                            inthesimulations.Thelongerthemodelspendsfixatingacertainword,themoreactivitypar-
+                            afovealwordsmayreceive,andthusthehigherthechancethatthesearerecognizedwhilein
+                            theparafoveaandaresubsequentlyskipped.Thiseffectcanbemorepronouncedinhighlypre-
+                            dictablewords,whichreceivemorepredictiveactivationunderparafovealpreview.Thus,
+                            giventhemodel’sassumptionthatearly(i.e.inparafovealpreview)wordrecognitionlargely
+                            driveswordskipping,predicativeactivationmayleadOB1-readertorecognizehighlypredict-
+                            ablewordsintheparafoveaandskipthem.Parafovealrecognitioneitherdoesnotoccuras
+                            ofteninhumans,ordoesnotcausehumanreaderstoskipthosewordsasreliablyasoccursin
+                            themodel.Itisalsoplausiblethatlexicalretrievalpriortofixationisnottheonlyfactordriving
+                            skippingbehaviour.Moreinvestigationisneededintotheinterplaybetweentop-downfeed-
+                            backprocesses,suchaspredictability,andperceptionprocesses,suchasvisualwordrecogni-
+                            tion,andtheroleofthisinteractioninsaccadeprogramming.   
+                             Tobetterunderstandthepotentialdifferencesbetweenmodelandempiricaldata,aswellas
+                            factorsdrivingthehigherperformanceofsimulationsusingLLM-basedpredictability,we
+                            comparedsimulatedandhumaneyemovementsinrelationtoword-basedlinguisticfeatures.
+                            Acrosspredictabilityconditions,wefoundreversetrendsinsimulatingreadingtimesandsac-
+                            cadepatterns:whilethereadingtimesoflonger,infrequent,andcontentwordsweremoredif-
+                            ficultforthemodeltosimulate,moreerrorwasobservedinfittingskippingandregression
+                            ratesofshorter,frequent,andfunctionwords.Acloserinspectionoftherawdifferences
+                            betweensimulatedandhumandatashowedthatthemodelwasmorecriticallyslowerthan
+                            humansatfirst-passreadingoflongerandinfrequentwords.Italsoskippedandregressedto
+                            longer,infrequentandcontentwordslessoftenthanhumans.Themodel,thus,seemstoread
+                            moredifficultwordsmore“statically”(one-by-one)thanhumansdo,withlessroomfor
+                            “dynamic”reading(readingfast,skipping,andregressingforrememberingorcorrecting).
+                             WhencomparingLLMstocloze,simulationsusingLLaMA-derivedpredictabilityshowed
+                            anadvantageatsimulatinggazeduration,totalreadingtimeandregressionratesofhighlypre-
+                            dictablewords,andadisadvantageatsimulatingskippingratesofhighlypredictablewords.
+                            OnepotentialexplanationisthathighlypredictablewordsfromtheLLMarereadfaster,and
+                            thusareclosertohumanreadingtimes,becauseLLaMA-derivedlikelihoodsforhighlypre-
+                            dictablewordsarehigherthanthosederivedfromGPT-2andcloze(S17Fig),providingmore
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOSComputationalBiology|https://doi.org/10.1371/journal.pcbi.1012117 September25,2024 11/24
+                                                                                    
+
+=== PAGE 12 ===
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOS COMPUTATIONAL BIOLOGY                         Languagemodelsoutperformclozepredictability
+                                                                                    
+                                                                                    
+                            predictiveactivationtothosewords.LLaMAisalsomoreaccurateatpredictingthenextword
+                            intheProvopassages,whichmayallowthemodeltoprovidemorepredictiveactivationtothe
+                            correctwordinthepassage(S1Appendix).Nexttofasterreading,simulationsusingLLaMA
+                            mayalsoskiphighlypredictablewordsmoreoften,leadingtoincreasingmismatchwiththe
+                            humandata.Thisprocesswasputforwardbeforeasthereasonwhythemodelmayexaggerate
+                            theskippingofhighlypredictablewords,and,sinceLLaMAprovideshighervaluesforhighly
+                            predictablewordsanditismoreaccurateatpredicting,theprocessismorepronouncedinthe
+                            LLaMAcondition.                                         
+                             Allinall,RMSEbetweensimulatedeyemovementsandcorpuseyemovementsacrosseye
+                            movementmeasuresindicatedthatLLMscanprovidewordpredictabilityestimateswhichare
+                            betterthanclozenormingatfittingeyemovementswithamodelofreading.Moreover,the
+                            leasterroracrosseyemovementsimulationsoccurredwithpredictabilityderivedfromamore
+                            complexlanguagemodel(inthiscase,LLaMA),relativetoasimplerlanguagemodel(GPT-2)
+                            andclozenorming.Previousstudiesusingtransformer-basedlanguagemodelshaveshown
+                            mixedevidenceforapositiverelationbetweenmodelqualityandtheabilityofthepredictabil-
+                            ityestimatestopredicthumanreadingbehaviour[20,35–37].Ourresultsalignwithstudies
+                            thathavefoundlanguagemodelwordpredictionaccuracy,commonlyoperationalizedasper-
+                            plexityorcross-entropy,andmodelsize,commonlyoperationalizedasthenumberofparame-
+                            ters,topositivelycorrelatewiththemodel’spsychometricpredictivepower[32,35].Notethat
+                            numberofparametersandnext-wordpredictionaccuracyarenottheonlydifferencesbetween
+                            themodelsused.Furtherinvestigationisneededcomparingmorelanguagemodels,andthe
+                            samelanguagemodelwithonesettingunderscrutinywhichvariessystematically(e.g.allset-
+                            tingsarethesameexcepttheparametercount),tohelptodeterminewhichlanguagemodel
+                            andsettingsarebestforestimatingpredictabilityinreadingsimulations.Ourresultssuggest
+                            thatmorecomplexpre-trainedLLMsaremoreusefultothisend.   
+                                                                                    
+                            Languagemodelsmayaidourunderstandingofthecognitivemechanisms
+                            underlyingreading                                       
+                                                                                    
+                            Improvedfitsaside,thebroader,andperhapsmoreimportant,questioniswhetherlanguage
+                            modelsmayprovideabetteraccountofthehigher-ordercognitioninvolvedinlanguagecom-
+                            prehension.Variousrecentstudieshaveclaimedthatdeeplanguagemodelsofferasuitable
+                            “computationalframework”,or“deeperexplanation”,forinvestigatingtheneurobiological
+                            mechanismsoflanguage[11,23,24],basedonthecorrelationbetweenmodelperformanceand
+                            humandata.However,correlationbetweenmodelandneuralandbehaviouraldatadoesnot
+                            necessarilymeanthatthemodelisperformingcognition,becausethesameinput-outputmap-
+                            pingscanbeperformedbywhollydifferentmechanisms(thisisthe“multiplerealizability”
+                            principle)[38].Consequently,claimingthatourresultsshowthatLLMsconstitutea“deeper
+                            explanation”forpredictabilityinreadingwouldbealogicalfallacy.Itatbestisafailedfalsifica-
+                            tionattempt,thatis,wefailedtoshowthatlanguagemodelsareunsuitableforcomplementing
+                            cognitivemodelsofreading.Ourresultsrathersuggestthatlanguagemodelsmightbeuseful
+                            inthesearchforexplanatorytheoriesaboutreading.Cautionremainsimportantwhendraw-
+                            ingparallelsbetweenseparateimplementations,suchasbetweenlanguagemodelsandhuman
+                            cognition[39].                                          
+                             Thequestionisthenhowwecanbestinterpretlanguagemodelsforcognitivetheorybuild-
+                            ing.Iftheyresemblelanguageprocessinginthehumanbrain,howso?Oneoptionistoframe
+                            LLMsasgoodmodelsofhowlanguageworksinthebrain,whichimpliesthatLLMsandlan-
+                            guagecognitionaremechanisticallyequivalent.Thisisimprobablehowever,giventhatLLMs
+                            aretoolsbuilttoperformlanguagetasksefficiently,withnotheoretical,empiricalorbiological
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOSComputationalBiology|https://doi.org/10.1371/journal.pcbi.1012117 September25,2024 12/24
+                                                                                    
+
+=== PAGE 13 ===
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOS COMPUTATIONAL BIOLOGY                         Languagemodelsoutperformclozepredictability
+                                                                                    
+                                                                                    
+                            considerationsabouthumancognition.Itishighlyunlikelythatlanguageprocessinginthe
+                            humanbrainresemblesaTransformerimplementedonaserialprocessor.Indeed,somestud-
+                            iesexplicitlyrefrainfrommakingsuchclaims,despitereferringtolanguagemodelsasa
+                            “deeperexplanation”or“suitablecomputationalframework”forunderstandinglanguagecog-
+                            nition[11,23].                                          
+                             AnotherinterpretationisthatLLMsresemblethebrainbyperformingthesametask,
+                            namelytopredicttheupcominglinguisticinputbeforetheyareperceived.Predictionasthe
+                            basicmechanismunderlyinglanguageisthecoreideaofPredictiveCoding,aprominentthe-
+                            oryinpsycholinguistics[3]andincognitiveneuroscience[40,41].However,sharedtasksdo
+                            notnecessarilyimplysharedalgorithms.Forinstance,ithasbeenshownthatmoreaccuracy
+                            onnext-wordpredictionwasassociatedwithworseencodingofbrainresponses,contraryto
+                            whatthetheoryofpredictivecodingwouldimply[39].          
+                             YetanotherpossibilityisthatLLMsresemblehumanlanguagecognitionatamoreabstract
+                            level:bothsystemsencodelinguisticfeatureswhichareacquiredthroughstatisticallearning
+                            onthebasisoflinguisticdata.Thesimilaritiesarethencausednotbythealgorithm,butbythe
+                            featuresintheinputwhichbothsystemslearntooptimallyencode.Thecapabilityoflanguage
+                            modelstoencodelinguisticknowledgehasbeentakenasevidencethatlanguage—including
+                            grammar,morphologyandsemantics—maybeacquiredsolelythroughexposure,withoutthe
+                            needfor,e.g.,anin-builtsenseofgrammar[42].Howhumansacquirelanguagehasbeena
+                            continuousdebatebetweentwocamps:theproponentsofuniversalgrammarargueforthe
+                            needofaninnate,rule-based,domain-specificlanguagesystem[43,44],whereasthepropo-
+                            nentsofusage-basedtheoriesemphasizetheroleofdomain-generalcognition(e.g.statistical
+                            learning,[45],andgeneralization,[46])inlearningfromlanguageexperience.Studyinglarge
+                            languagemodelscanonlyenlightenthisdebateifthosemodelsaretakentocapturetheessence
+                            ofhumanlearningfromlinguisticinput.                     
+                             Incontrast,somestudiescriticizetheuseoflanguagemodelstounderstandhumanpro-
+                            cessingaltogether.Havingfoundalinearrelationshipbetweenpredictabilityandreading
+                            timesinsteadofalogarithmicrelationship,SmithandLevy[10]andBrothersandKuperberg
+                            [25]speculatedthediscrepancytobeduetotheuseofn-gramlanguagemodelsinsteadof
+                            clozeestimations.Oneargumentwasthatlanguagemodelsandhumanreadersaresensitiveto
+                            distinctaspectsofthepreviouslinguisticcontextandthattheinterpretabilityandlimited
+                            causalinferenceoflanguagemodelsaresubstantialdownfalls.However,languagemodelshave
+                            becomemorepowerfulincausalinferenceandprovideamoreeasilyinterpretablemeasureof
+                            predictabilitythandoescloze.Additionally,contextualizedwordrepresentationsshowthatthe
+                            previouslinguisticcontextcanbebettercapturedbythestate-of-the-artlanguagemodelsthan
+                            bysimplerarchitecturessuchasn-grammodels.Moreimportantly,neuralnetworksallowfor
+                            internal(e.g.architecture,representations)andexternal(e.g.inputandoutput)probing:when
+                            certaininputorarchitecturalfeaturescanbeassociatedwithhypothesesaboutcognition,test-
+                            ingwhetherthesefeaturesgiverisetoobservedmodelbehaviourcanhelpadjudicateamong
+                            differentmechanisticexplanations[24].Allinall,languagemodelsshowgoodpotentialtobea
+                            valuabletoolforinvestigatinghigher-levelprocessinginreading.Combininglanguagemodels,
+                            whicharebuiltwithengineeringgoalsinmind,withmodelsofhumancognition,mightbea
+                            powerfulmethodtotestmechanisticaccountsofreadingcomprehension.Thecurrentstudyis
+                            thefirsttoapplythismethodologicalstrategy.              
+                             Finally,weemphasizethattheLLM’ssuccessislikelynotonlyafunctionoftheLLMitself,
+                            butalsoofthewayinwhichitsoutputsarebroughttobearinthecomputationalmodel.The
+                            cognitivemechanismthatweproposed,inwhichpredictionsgraduallyaffectmultiplewords
+                            inparallel,mayalignbetterwithLLMsthanwithclozenorms,becausetheoutputsofthefor-
+                            merarebasedonacontinuousconsiderationofmultiplewordsinparallel,whiletheoutputs
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOSComputationalBiology|https://doi.org/10.1371/journal.pcbi.1012117 September25,2024 13/24
+                                                                                    
+
+=== PAGE 14 ===
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOS COMPUTATIONAL BIOLOGY                         Languagemodelsoutperformclozepredictability
+                                                                                    
+                                                                                    
+                            ofthelattermaybedrivenbyamoreserialapproach.Moreinvestigationisneededastowhat
+                            extentthebenefitofLLMsisindependentofthecognitivetheoryintowhichitisembedded.
+                            ComparingtheeffectofLLM-derivedpredictabilityinothermodelsofreading,especially
+                            serialones(e.g.E-ZReader)couldprovideaclearerunderstandingofthegeneralizabilityof
+                            suchapproach.                                           
+                             Anotherpotentialvenueforfutureinvestigationsiswhethertransformer-basedLLMscan
+                            accountforearlyandlatecognitiveprocessesduringreadingbyvaryingthesizeofthecontext
+                            windowoftheLLM.Hofmannetal.[11]haveinvestigatedasimilarquestion,butusinglan-
+                            guagemodelarchitectureswhichdifferinhowmuchofthecontextisconsidered,without
+                            includingthetransformer-basedarchitecturenorperformingreadingsimulations.Weempha-
+                            sizethatsuchinvestigationwouldrequirecarefulthinkingonhowtoalignthecontextwindow
+                            oftheLLMwiththatofthemodelofreadingsimulation.Follow-upworkmayaddresssuch
+                            gap.                                                    
+                             Theoptimalmethodtoinvestigatelanguagecomprehensionmaybebycombiningtheabil-
+                            ityoflanguagemodelstofunctionallycapturehigher-orderlanguagecognitionwiththeability
+                            ofcognitivemodelstomechanicallycapturelow-orderlanguageperception.Computational
+                            modelsofreading,andmorespecifically,eye-movementcontrolinreading,arebuiltasasetof
+                            mathematicalconstructstodefineandtestexplanatorytheoriesormechanismproposals
+                            regardinglanguageprocessingduringreading.Assuch,theyaremoreinterpretableandmore
+                            resemblingoftheoreticalandneurobiologicalaccountsofcognitionthanLLMs.However,
+                            theyoftenlackfunctionalgeneralizabilityandaccuracy.Incontrast,largelanguagemodelsare
+                            builttoefficientlyperformnaturallanguageprocessingtasks,withlittletonoemphasizeson
+                            neurocognitiveplausibilityandinterpretability.Interestingly,despitetherelianceonperfor-
+                            manceoverexplanatorypowerandcognitiveplausibility,LLMshavebeenshowntocapture
+                            variousaspectsofnaturallanguage,inparticularatlevelsofcognitionconsideredhigherorder
+                            bybrainandlanguageresearchers(e.g.semanticsanddiscourse)andwhichmodelsofeye-
+                            movementcontrolinreadingoftenlack.ThisremarkableabilityofLLMssuggeststhatthey
+                            offerapromisingtoolforexpandingcognitivemodelsofreading.
+                                                                                    
+                            Methods                                                 
+                                                                                    
+                            Eye-trackingandclozenorming                             
+                            WeusethefullclozecompletionandreadingtimedatafromtheProvocorpus[29].Thiscor-
+                            pusconsistsofdatafrom55passages(2689wordsintotal)withanaverageof50words(range:
+                            39–62)and2.5sentences(range:1–5)perpassage,takenfromvariousgenres,suchasonline
+                            newsarticles,popularscienceandfiction(see(a)belowforanexamplepassage).TheProvo
+                            corpushadseveraladvantagesoverothercorpora;Sentencesarepresentedaspartofamulti-
+                            linepassageinsteadofinisolation[47],whichisclosertonatural,continuousreading.Inaddi-
+                            tion,Provoprovidespredictabilitynormsforeachwordinthetext,insteadofonlythefinal
+                            word[48],whichisidealforstudiesinwhicheverywordisexamined.Finally,otherclozecor-
+                            poratendtocontainquitemanyconstrainedcontexts(whichareactuallyrareinnaturalread-
+                            ing),whilethiscorpusprovidesamorenaturalisticclozeprobabilitydistribution[29].
+                            a. TherearenowrumblingsthatApplemightsooninvadethesmartwatchspace,thoughthe
+                             companyismaintainingitscustomarysilence.Thewatchdoesn’thaveamicrophoneor
+                             speaker,butyoucanuseittocontrolthemusiconyourphone.Youcanglanceatthewatch
+                             facetoviewtheartistandtitleofasong.                    
+                                                                                    
+                             Inanonlinesurvey,470participantsprovidedaclozecompletiontoeachwordpositionin
+                            eachpassage.Eachparticipantwasrandomlyassignedtocomplete5passages,resultingin15
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOSComputationalBiology|https://doi.org/10.1371/journal.pcbi.1012117 September25,2024 14/24
+                                                                                    
+
+=== PAGE 15 ===
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOS COMPUTATIONAL BIOLOGY                         Languagemodelsoutperformclozepredictability
+                                                                                    
+                                                                                    
+                            uniquecontinuationsfilledinby40participantsonaverage.AllparticipantswereEnglish
+                            nativespeakers,ages18–50,withatleastsomecollegeexperience.Another85nativeEnglish-
+                            speakinguniversitystudentsreadthesame55passageswhiletheireyesweretrackedwitha
+                            high-resolution,EyeLink1000eye-tracker.                 
+                             Theclozeprobabilityofeachcontinuationintheupcomingwordpositionwasequivalent
+                            totheproportionofparticipantsthatprovidedthecontinuationinthecorrespondingword
+                            position.Sincethenumberofparticipantscompletingasequencewasamaximumof43,the
+                            minimumclozeprobabilityofacontinuationwas0.023(i.e.ifeachparticipantwouldgivea
+                            differentcontinuation).Wordsinapassagewhichdidnotappearamongtherespondedcon-
+                            tinuationsreceivedclozeprobabilityof0.Theclozeprobabilitiesofeachwordineachpassage
+                            andthecorrespondingcontinuationswereusedinthemodeltopre-activateeachpredicted
+                            word,asfurtherexplainedinthesub-section“PredictabilityImplementation”underMethods.
+                             Themainmeasureofinterestinthisstudyiseyemovements.Duringreading,oureyes
+                            makecontinuousandrapidmovements,calledsaccades,separatedbypausesinwhichtheeyes
+                            remainstationary,calledfixations.ReadinginEnglishconsistsoffixationsofabout250mson
+                            average,whereasasaccadetypicallylasts15-40ms.Typically,about10–15%aresaccadesto
+                            earlierpartsofthetext,calledregressions,andabouttwothirdsofthesaccadesskipwords[49].
+                             Thetimespentreadingawordisassociatedwiththeeaseofrecognizingthewordandinte-
+                            gratingitwiththepreviouslyreadpartsofthetext[49].Thefixationdurationsandsaccadeori-
+                            ginsanddestinationsarecommonlyusedtocomputeword-basedmeasuresthatreflecthow
+                            longandhowofteneachwordwasfixated.Measuresthatreflectearlystagesofwordprocess-
+                            ingsuchaslexicalretrievalinclude(i)skippingrate,(ii)firstfixationduration(thedurationof
+                            thefirstfixationonaword),and(iii)gazeduration(thesumoffixationsonawordbeforethe
+                            eyesmoveforward).Latemeasuresincludetotalreadingtime(iv)and(v)regressionrateand
+                            aresaidtoreflectfullsyntacticandsemanticintegration[50].Facilitatoryeffectsofword
+                            predictabilityaregenerallyevidencedinbothearlymeasuresandlatemeasures:thatis,pre-
+                            dictablewordsareskippedmoreoftenandreadmorequickly[27]. 
+                             Themeasuresofinterestreadilyprovidedintheeye-trackingportionofthecorpuswere
+                            firstfixationduration,gazeduration,totalreadingtime,skippinglikelihoodandregression
+                            likelihood.Thosemeasureswerereportedbytheauthorstobepredictablefromtheclozeprob-
+                            abilities,attestingthevalidityofthedatacollected.Wereferthereaderto[29]formoredetails
+                            onthecorpusused.                                        
+                                                                                    
+                            Languagemodels                                          
+                                                                                    
+                            Languagemodelprobabilitieswereobtainedfromtwotransformer-basedlanguagemodels:
+                            thesmallestversionavailableofthepre-trainedLLaMA[31](7billionparameters,32hidden
+                            layers,32attentionheads,4096hiddendimensionsand32kvocabularysize);andthesmallest
+                            versionofthepre-trainedGPT-2[30](124millionparameters,12hiddenlayers,12attention
+                            heads,768hiddendimensionsand50kvocabularysize).Bothmodelswerefreelyaccessible
+                            throughtheHuggingFaceTransformerslibraryatthetimeofthestudy.Themodelsareauto
+                            regressiveandthustrainedonpredictingawordbaseduniquelyonitspreviouscontext.Given
+                            asequenceasinput,thelanguagemodelcomputesthelikelihoodofeachwordinthemodel’s
+                            vocabularytofollowtheinputsequence.Thelikelihoodvaluesareexpressedintheformof
+                            logitsinthemodel’soutputvector,whereeachdimensioncontainsthelogitofacorrespond-
+                            ingtokeninthemodel’svocabulary.Thelogitsarenormalizedusingsoftmaxoperationtobe
+                            between0and1.                                           
+                             Sincethelanguagemodeloutputsalikelihoodforeachtokeninthemodel’svocabulary,we
+                            limitedthesampletoonlythetokenswithlikelihoodaboveathreshold.Thethresholdwas
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOSComputationalBiology|https://doi.org/10.1371/journal.pcbi.1012117 September25,2024 15/24
+                                                                                    
+
+=== PAGE 16 ===
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOS COMPUTATIONAL BIOLOGY                         Languagemodelsoutperformclozepredictability
+                                                                                    
+                                                                                    
+                            definedaccordingtotwocriteria:thenumberofpredictedwordsbythelanguagemodel
+                            shouldbeclosetotheaveragenumberofclozeresponsesovertextpositions,andthethreshold
+                            valueshouldbesufficientlylowinordertocapturetheusuallylowerprobabilitiesoflanguage
+                            models.Wehaveattemptedafewthresholdvalues(low=0.001,medium-low=0.005,
+                            medium=0.01,medium-high=0.05,andhigh=0.1).Themediumthreshold(0.01)provided
+                            theclosestnumberofcontinuationsandaveragetop-1predictabilityestimatetothoseofcloze.
+                            Forexample,usingthemediumthresholdonGPT-2predictionsprovidedanaverageof
+                            approximately10continuations(range0–36)andanaveragepredictabilityof0.29forthetop-
+                            1prediction,whichwastheclosesttothevaluesfromcloze(averageof15continuationsrang-
+                            ingfrom0to38,andtop-1averagepredictabilityof0.32).Lowandmedium-lowprovideda
+                            muchhighernumberofcontinuations(averagesof75and19,rangingupto201and61,
+                            respectively),whereasmedium-highandhighprovidedtoofewcontinuationscomparedto
+                            cloze(averageof2and1continuations,rangingupto12and5,respectively).Themedium
+                            thresholdwasalsooptimalforLLaMA.Notethatwehavenotappliedsoftmaxtotheresulting
+                            sequenceofpredictabilityestimates.Thehighlylongtailofpredictabilityestimatesexcluded
+                            (approximatelythesizeoftheLLMvocabulary,i.e.~50kestimatesforGPT-2and~32kfor
+                            LLaMA)meantthatre-normalizingthetop10to15estimates(theaveragenumberofcontinu-
+                            ationspostthresholdfiltering)wouldremovemostofthevariationamongthetopestimates.
+                            Forinstance,inthefirstpassagethesecondwordpositionledtolikelihoodsforthetop12pre-
+                            dictionsvaryingbetween.056and.011.Applyingsoftmaxresultedinallestimatestransformed
+                            to.08whenroundedtotwodecimals.Thus,eventhoughitiscommonpracticetore-normal-
+                            izeafterfilteringtoensurethevaluessumtooneacrossdifferentsources,weoptedtouse
+                            predictabilityestimateswithoutpost-filteringre-normalization.
+                             Eachsequencewastokenizedwiththecorrespondingmodel’stokenizerbeforegivenas
+                            input,sincethelanguagemodelshavetheirowntokenization(Byte-PairEncoder[51])and
+                            expecttheinputtobetokenizedaccordingly.Pre-processingthetokensandapplyingthe
+                            thresholdonthepredictabilityvaluesresultedinanaverageof10continuationsperwordposi-
+                            tion(range1to26)withLLaMAandanaverageof10continuationsperwordposition(range
+                            1to36)withGPT-2.Aftertokenization,notrial(i.e.Provopassage)waslongerthanthemaxi-
+                            mumlengthsallowedbyLLaMA(2048tokens)norbyGPT-2(1024tokens).Notethatthe
+                            tokensformingthelanguagemodel’svocabularydonotalwaysmatchawordinOB1-reader’s
+                            vocabulary.Thisisbecausewordscanberepresentedasmulti-tokensinthelanguagemodel
+                            vocabulary.Additionally,OB1-reader’svocabularyispre-processedandlimitedtothetext
+                            wordsplusthemostfrequentwordsinafrequencycorpus[52].31%ofthepredictedtokens
+                            byLLaMAwerenotinOB1-reader’svocabularyand17%ofwordsinthestimuliaresplitinto
+                            multi-tokensinLLaMA’svocabulary.WithGPT-2,thesepercentageswere26%and16%,
+                            respectively.                                           
+                             Tominimizetheimpactofvocabularymisalignment,weconsideredamatchbetweena
+                            wordintheOB1-reader’slexiconandapredictedtokenwhenthepredictedtokencorre-
+                            spondedtothefirsttokenofthewordastokenizedbythelanguagemodeltokenizer.For
+                            instance,theword“customary”issplitintothetokens“custom”and“ary”byLLaMA.If“cus-
+                            tom”isamongthetoppredictionsfromLLaMA,weusedthepredictabilityof“custom”asan
+                            estimateforthepredictabilityof“customary”.Weareawarethatthisdesignchoicemayover-
+                            estimatethepredictabilityoflongwords,aswellascreatediscrepanciesbetweendifferent
+                            sourcesofpredictability(asdifferentlanguagemodelshavedifferenttokenizers).However,in
+                            theproposedpredictabilitymechanism,notonlythetextwordsareconsidered,butalsoallthe
+                            wordspredictedatagiventextposition(aboveapre-definedthreshold).Otherapproaches
+                            thataggregatethepredictabilityestimatesoveralltokensbelongingtotheword,insteadof
+                            onlythefirsttoken,wouldrequirecomputingnext-tokenpredictionsrepeatedlyforeach
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOSComputationalBiology|https://doi.org/10.1371/journal.pcbi.1012117 September25,2024 16/24
+                                                                                    
+
+=== PAGE 17 ===
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOS COMPUTATIONAL BIOLOGY                         Languagemodelsoutperformclozepredictability
+                                                                                    
+                                                                                    
+                            differentpredictedtokenforeachtextposition,untilweassumeawordhasbeenformed.To
+                            avoidtheseissuesandsincetheproportionoftextwordswhicharesplitintomorethanone
+                            tokenbythelanguagemodelsismoderate(17%and16%fromLLaMAandGPT-2,respec-
+                            tively),weadoptedthesimplerfirst-token-onlystrategy.    
+                                                                                    
+                            Modeldescription                                        
+                            IneachfixationbyOB1-reader(illustratedinFig5),theinputconsistsofthefixatedwordn
+                            andthewordsn—1,n+1,n+2andn+3processedinparallel.Witheachprocessingcycle,
+                            wordactivationisdeterminedbyexcitationfromconstituentletters,inhibitionfromcompet-
+                            ingwordsandapassivedecayovertime.                       
+                             Themodelassumesthatattentionisallocatedtomultiplewordsinparallel,suchthatrecog-
+                            nizingthosewordscanbeachievedconcurrently.Openbigrams[53]fromthreetofivewords
+                            areactivatedsimultaneously,modulatedbytheeccentricityofeachletter,itsdistancefromthe
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          Fig5.SchematicDiagramfromOB1-reader.Thisdiagramwastakenfrom[12].          
+          https://doi.org/10.1371/journal.pcbi.1012117.g005                         
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOSComputationalBiology|https://doi.org/10.1371/journal.pcbi.1012117 September25,2024 17/24
+                                                                                    
+
+=== PAGE 18 ===
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOS COMPUTATIONAL BIOLOGY                         Languagemodelsoutperformclozepredictability
+                                                                                    
+                                                                                    
+                            focusofattention,andcrowdingexertedbyitsneighbouringletters.Eachfixationsetsoffsev-
+                            eralwordactivationcyclesof25mseach.Withineachcycle,thebigramsencodedfromthe
+                            visualinputpropagateactivationtoeachlexiconwordtheyarein.Theactivatedwordswith
+                            bigramoverlapinhibiteachother.Lexicalretrievalonlyoccurswhenawordofsimilarlength
+                            tothewordinthevisualinputreachestherecognitionthreshold,whichdependsonitsfre-
+                            quency.Initiatingasaccadeisastochasticdecision,withsuccessfulwordrecognitionincreas-
+                            ingthelikelihoodofmovingthe“eyes”,thatis,theletterpositionwherethefixationpointis
+                            simulatedinthetext.Wordrecognitionalsoinfluencesthesizeoftheattentionwindow,by
+                            increasingtheattentionwindowwhensuccessful.Oncethesaccadeisinitiated,themostvisu-
+                            allysalientwordwithintheattentionwindowbecomesthesaccade’sdestination.Withthe
+                            changeinthelocationoffixation,theactivationofwordsnolongerinthevisualinputdecays,
+                            whilewordsencodedinthenewvisualinputreceiveactivation.  
+                             Thestrengthoftheexcitationfromvisualprocessingv generatedbyaletteridependson
+                                                           i                        
+                            itseccentricitye andcrowdingm,weightedbyanattentionalweighta,andnormalizedby
+                                    i         i                   i                 
+                            thenumberofbigramsinthelexiconlen(bigrams)andaconstantc ,asinthefollowingequa-
+                                                                d                   
+                            tion(adaptedfromSnelletal.[6]):                         
+                                                   �  (cid:0) ��                    
+                                               a �m 1=c 0:018∗e þ 1                 
+                                            v ¼ i i  e     i 0:64                   
+                                             i    lenðbigramsÞþc                    
+                                                           d                        
+                             Thecombinationsoflettersactivateopenbigrams,whicharepairofletterswithinthesame
+                            wordand,inOB1-reader,uptothreelettersapart.TheactivationofanopenbigramO thus
+                                                                           ij       
+                            equalsthesquarerootofthevisualinputv andv oftheconstituentlettersiandj,asimple-
+                                                   i  j                             
+                            mentedintheoriginalOB1-reader.                          
+                             Thestrengthoftheinhibitionfromotherwordnodesdependsontheextentofthepairwise
+                            orthographicoverlap.Witheachtimestepthatthewordisnotinvisualinput,theactivation
+                            decays.Wordsarerecognizedwhentheiractivationsreachtheircorrespondingrecognition
+                            thresholds.NotethatintheoriginalOB1-reader,thisthresholdisdeterminedbytheword’s
+                            length,frequency,andpredictability,whichisconstantforallwordsbeingpredictedatthe
+                            sametextposition.InthisversionofOB1-reader,predictabilityismodelledasactivation
+                            instead.Thisallowspredictabilitytobespecifictothewordsbeingpredictedbeyondtheactual
+                            wordinthetextposition.Therecognitionthresholdisthusonlydeterminedbyfrequency
+                            weightedbyaconstant(c),asfollows:                       
+                                         f                                          
+                                                    ðfreq =c Þ(cid:0) freq          
+                                             T ¼freq ∗ max f  w                     
+                                                 max   freq =c                      
+                                                         max f                      
+                            Predictabilityimplementation                            
+                            Inadditiontothevisualactivation,wordspredictedtofollowthewordbeingcurrentlyread
+                            receivepredictiveactivation(A )inthemodel’slexicon.Givenawordw atpositioniinapas-
+                                             p                     i                
+                            sageT,activationisaddedtoeachpredictedwordw ofpredictabilitypred abovethresholdt
+                                                        p           w               
+                            inthemodel’slexicon,priortowordw beingfixatedbythemodel.TheactivationA ofw as
+                                                 i                        p  p      
+                            aresultofw beingpredictedfromthepreviouscontextisdefinedasfollows:
+                                  p                                                 
+                                              A ¼pred �pred �c ;                    
+                                               p    w   w(cid:0) 1 p                
+                            wherepred iseitherthelanguagemodelorclozecompletionprobability;pred isthe
+                                  w                                    w-1          
+                            predictabilityofthepreviousword,whichvariesasafunctionofrecognitionofthatword;and
+                            c isafree-scalingparameter.pred equalstothecloze-orlanguagemodel-derivedpredict-
+                            1                 w-1                                   
+                            abilityofthepreviouswordifithasnotbeenrecognizedyet,or1ifitslexicalaccesshasbeen
+     PLOSComputationalBiology|https://doi.org/10.1371/journal.pcbi.1012117 September25,2024 18/24
+
+=== PAGE 19 ===
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOS COMPUTATIONAL BIOLOGY                         Languagemodelsoutperformclozepredictability
+                                                                                    
+                                                                                    
+                            Table1. SimulationParameters.                           
+                            Parameter Description    Value                          
+                              c  Scalingcorticalmagnification 35.55556              
+                              e                                                     
+                              e  Lettereccentricity  Distanceinlettersbetweenletterandcentreofattention,
+                              i                                                     
+                                                     times0.3(lettersizeperdegreeofvisualangle)
+                             m   Maskingfactordescribingcrowding 1forouterletters,.5forinnerletters,3forone-letter
+                              i                                                     
+                                                     words                          
+                              c  Discountedngramfactortonormalize 5                 
+                              d                                                     
+                                 strongactivationofshortwords                       
+                              c  Weightoffrequencyinthresholdsetting .08            
+                              f                                                     
+                              c  Weightofpredictabilityinpredictive [.05,.1,.2]     
+                              p                                                     
+                                 activationsetting                                  
+                              τ  Decay               -.1                            
+                             S   Maximumactivityofawordnode 1                       
+                              max                                                   
+                             S   Minimumactivityofawordnode 0                       
+                              min                                                   
+                              c1 Bigram-to-wordexcitation 1                         
+                              c2 Word-to-wordinhibition -2.5                        
+                            https://doi.org/10.1371/journal.pcbi.1012117.t001       
+                            completed.                                              
+                                 DS ¼ððS (cid:0) S Þ�½c ðS O Þ(cid:0) c ðS d S ÞþA �ÞþððS (cid:0) S Þ∗tÞ
+                                   w   max w  1 ij�w ij 2 k w;k k p w min           
+                             Theinputbetweensquarebracketshasthreeparts.Thefirstterm(c ðS O Þ)istheexcita-
+                                                                  1 ij�w ij         
+                            tionfrombigramnodes,thesecondterm((cid:0) c ðS d S Þ)istheinhibitionexertedbycompet-
+                                                    2 k w;k k                       
+                            ingwordsinthelexicon,andthethirdpart(A )isthepredictiveactivation.Wordactivityis
+                                                     p                              
+                            boundtotheintervalbetweenS andS anddecays(τ)witheverycycleinwhichtheword
+                                             max  min                               
+                            isnotinthevisualinput.Eachparafovealwordgetspredictiveactivationinparalleltoother
+                            parafovealwordsuntilitsrecognitioncycleisreached.SeeTable1foranoverviewofthe
+                            modelparameters.                                        
+                             Withthedescribedimplementation,predictiveactivationexertsafacilitatoryeffecton
+                            wordrecognitionthroughfasterreadingtimesandmorelikelihoodofskipping.Wordsinthe
+                            textwhicharepredictedreceiveadditionalactivationpriortotheirfixation,whichallowsfor
+                            theactivationthresholdforlexicalaccesstobereachedmoreeasily.Consequently,thepre-
+                            dictedwordmayberecognizedmorereadilyandevenbeforefixation.Inaddition,higher
+                            predictabilitymayindirectlyincreasethelikelihoodofskipping,becausemoresuccessfulrec-
+                            ognitioninthemodelleadstoalargerattentionwindow.Incontrast,activationofpredicted
+                            wordsmayexertaninhibitoryeffectontherecognitionofwordswithlowpredictability,
+                            becauseactivated,predictedwordsinhibitthewordsthattheyresembleorthographically,
+                            whichmayincludethewordthatwastrulyinthetext.            
+                            Readingsimulations                                      
+                            Thesimulationinputconsistedofeachofthe55passagesfromtheProvocorpus,withpunctu-
+                            ationandtrailingspacesremovedandwordslower-cased.Theoutputofeachmodelsimula-
+                            tionmainlyconsistedofreadingtimes,skippingandregressioncomputedpersimulated
+                            fixation.Forevaluation,wetransformthefixation-centeredoutputintoword-centereddata,
+                            whereeachdatapointaggregatesfixationinformationofeachwordineachpassage.Usingthe
+                            word-centereddata,wecomputedtheeye-movementmeasuresforeachwordinthecorpus.
+                            Sincetheeyemovementmeasuresvaryonscale(millisecondsfordurationsandlikelihoodfor
+                            skippingandregression),westandardizedtherawdifferencesbetweensimulatedandhuman
+     PLOSComputationalBiology|https://doi.org/10.1371/journal.pcbi.1012117 September25,2024 19/24
+
+=== PAGE 20 ===
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOS COMPUTATIONAL BIOLOGY                         Languagemodelsoutperformclozepredictability
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          Fig6.MethodologyusedinexperimentwithOB1-reader,LLMsandClozePredictability.(a)InOB1-reader,amodelofeye-movementsinreading,word
+          predictabilityiscomputedforeverywordpredictedinacondition(GPT-2,LLaMA,cloze)ineachpositioninthecurrentstimulus.Thepredictabilityofeach
+          predictedword(predw)isweightedbythepredictabilityofthepreviousword(predw-1)andafreeparameter(c4),andaddedtoitscurrentactivation(Sw)at
+          eachcycleuntilrecognition.ThenumberofprocessingcyclesbyOB1-readertoachieverecognitiondeterminetheword’sreadingtime.(b)Eyemovements
+          simulatedbythemodelarecomparedtotheeyemovementsfromtheProvoCorpusbycomputingRMSEscores.
+          https://doi.org/10.1371/journal.pcbi.1012117.g006                         
+                            valuesbasedontherespectivehumanaverage.RootMeanSquareError(RMSE)wasthencal-
+                            culatedbetweenthesimulatedword-basedeye-movementmeasuresandtheequivalent
+                            humandatapersimulation,andWilcoxont-testwasruntocomparetheRMSEacross
+                            conditions.                                             
+                             Finally,wecomparedtheerrorineachconditionacrossdifferentword-basedlinguisticvar-
+                            iables(length,frequency,predictability,part-of-speechcategoryandposition)tobetterunder-
+                            standthedifferencesinperformance.Thisanalysisconsistedofbinning(20binsofequal
+                            width)thecontinuouslinguisticvariables(length,frequency,predictabilityandposition),
+                            computingtheRMSEineachsimulationforeachbin,andaveragingtheRMSEforeachbin
+                            oversimulations.Part-of-speechtagswerebinnedintothreecategories:content,consistingof
+                            theSpacypart-of-speechtagsnoun(NOUN),verb(VERB),adjective(ADJ),adverb(ADV)
+                            andpropernoun(PROPN);function,consistingoftheSpacypart-of-speechtagsauxiliary
+                            (AUX),adposition(ADP),conjunction(CONJ,SCONJ,CCONJ),determiner(DET),particle
+                            (PART),andpronoun(PRON);andother,consistingofnumeral(NUM),interjection(INTJ)
+                            andmiscellaneous(X).SeeFig6foranoverviewofthemethodology.Thecodetorunand
+                            evaluatethemodelsimulationsisfullyavailableontheGitHubrepositoryofthisproject.
+                                                                                    
+                                                                                    
+                            Supportinginformation                                   
+                            S1Fig.Relationbetweenpredictabilityandfirstfixationduration.Predictabilityiscom-
+                            putedfromclozenorms,gpt2orllama,andisdisplayedasafunctionoftheweightattachedto
+                            predictabilityinwordactivation(low,mediumorhigh).Firstfixationdurationisdisplayedin
+                            milliseconds.                                           
+                            (TIFF)                                                  
+                            S2Fig.RootMeanSquareError(RMSE)forfirstfixationdurationsinrelationtoword
+                            variables.Thewordvariablesarefrequency,length,predictability,andthepositionofthe
+                            wordinthepassage(word_id).                              
+                            (TIFF)                                                  
+                                                                                    
+                            S3Fig.Relationbetweenwordvariablesandfirstfixationduration.Thewordvariablesare
+                            frequency,length,predictability,thepositionofthewordinthepassage(word_id),andtype
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOSComputationalBiology|https://doi.org/10.1371/journal.pcbi.1012117 September25,2024 20/24
+                                                                                    
+
+=== PAGE 21 ===
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOS COMPUTATIONAL BIOLOGY                         Languagemodelsoutperformclozepredictability
+                                                                                    
+                                                                                    
+                            (function,content,orother).Firstfixationdurationisdisplayedinmilliseconds.
+                            (TIFF)                                                  
+                            S4Fig.Relationbetweenpredictabilityandgazeduration.Predictabilityiscomputedfrom
+                            clozenorms,gpt2orllama,andisdisplayedasafunctionoftheweightattachedtopredictabil-
+                            ityinwordactivation(low,mediumorhigh).Gazedurationisdisplayedinmilliseconds.
+                            (TIFF)                                                  
+                                                                                    
+                            S5Fig.RootMeanSquareError(RMSE)forgazedurationsinrelationtowordvariables.
+                            Thewordvariablesarefrequency,length,predictability,andthepositionofthewordinthe
+                            passage(word_id).                                       
+                            (TIFF)                                                  
+                            S6Fig.Relationbetweenwordvariablesandgazeduration.Thewordvariablesarefre-
+                            quency,length,predictability,thepositionofthewordinthepassage(word_id),andtype
+                            (function,content,orother).Gazedurationisdisplayedinmilliseconds.
+                            (TIFF)                                                  
+                                                                                    
+                            S7Fig.Relationbetweenpredictabilityvaluesandskippinglikelihood.Predictabilityis
+                            computedfromclozenorms,gpt2orllama,andisdisplayedasafunctionoftheweight
+                            attachedtopredictabilityinwordactivation(low,mediumorhigh).
+                            (TIFF)                                                  
+                            S8Fig.RootMeanSquareError(RMSE)forskippinglikelihoodinrelationtowordvari-
+                            ables.Thewordvariablesarefrequency,length,predictability,andthepositionofthewordin
+                            thepassage(word_id).                                    
+                            (TIFF)                                                  
+                                                                                    
+                            S9Fig.RootMeanSquareError(RMSE)foreacheyemovementmeasureinrelationto
+                            wordtype(content,functionorother).                      
+                            (TIFF)                                                  
+                            S10Fig.Relationbetweenwordvariablesandskippinglikelihood.Thewordvariablesare
+                            frequency,length,predictability,thepositionofthewordinthepassage(word_id),andtype
+                            (function,content,orother).                             
+                            (TIFF)                                                  
+                                                                                    
+                            S11Fig.Relationbetweenpredictabilityandtotalreadingtime.Predictabilityiscomputed
+                            fromclozenorms,gpt2orllama,andisdisplayedasafunctionoftheweightattachedto
+                            predictabilityinwordactivation(low,mediumorhigh).Totalreadingtimeisdisplayedinmil-
+                            liseconds.                                              
+                            (TIFF)                                                  
+                            S12Fig.RootMeanSquareError(RMSE)fortotalreadingtimeinrelationtowordvari-
+                            ables.Thewordvariablesarefrequency,length,predictability,andthepositionofthewordin
+                            thepassage(word_id).                                    
+                            (TIFF)                                                  
+                            S13Fig.Relationbetweenwordvariablesandtotalreadingtime.Thewordvariablesarefre-
+                            quency,length,predictability,thepositionofthewordinthepassage(word_id),andtype
+                            (function,content,orother).Totalreadingtimeisdisplayedinmilliseconds.
+                            (TIFF)                                                  
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOSComputationalBiology|https://doi.org/10.1371/journal.pcbi.1012117 September25,2024 21/24
+                                                                                    
+
+=== PAGE 22 ===
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOS COMPUTATIONAL BIOLOGY                         Languagemodelsoutperformclozepredictability
+                                                                                    
+                                                                                    
+                            S14Fig.Relationbetweenpredictabilityandregressionlikelihood.Predictabilityiscom-
+                            putedfromclozenorms,gpt2orllama,andisdisplayedasafunctionoftheweightattachedto
+                            predictabilityinwordactivation(low,mediumorhigh).       
+                            (TIFF)                                                  
+                            S15Fig.RootMeanSquareError(RMSE)forregressionlikelihoodinrelationtowordvar-
+                            iables.Thewordvariablesarefrequency,length,predictability,andthepositionofthewordin
+                            thepassage(word_id).                                    
+                            (TIFF)                                                  
+                                                                                    
+                            S16Fig.Relationbetweenwordvariablesandregressionlikelihood.Thewordvariablesare
+                            frequency,length,predictability,thepositionofthewordinthepassage(word_id),andtype
+                            (function,content,orother).                             
+                            (TIFF)                                                  
+                            S17Fig.Distributionofpredictabilityvaluesbyeachpredictor.
+                            (TIFF)                                                  
+                                                                                    
+                            S1Appendix.AccuracyandCorrelationAnalyses.              
+                            (DOCX)                                                  
+                                                                                    
+                                                                                    
+                            AuthorContributions                                     
+                            Conceptualization:AdrielliTinaLopesRego,JoshuaSnell,MartijnMeeter.
+                                                                                    
+                            Datacuration:AdrielliTinaLopesRego.                     
+                            Formalanalysis:AdrielliTinaLopesRego,MartijnMeeter.     
+                                                                                    
+                            Fundingacquisition:MartijnMeeter.                       
+                            Investigation:AdrielliTinaLopesRego.                    
+                            Methodology:AdrielliTinaLopesRego,JoshuaSnell,MartijnMeeter.
+                                                                                    
+                            Projectadministration:MartijnMeeter.                    
+                            Software:AdrielliTinaLopesRego,MartijnMeeter.           
+                            Supervision:JoshuaSnell.                                
+                                                                                    
+                            Validation:MartijnMeeter.                               
+                            Visualization:AdrielliTinaLopesRego.                    
+                                                                                    
+                            Writing–originaldraft:AdrielliTinaLopesRego.            
+                            Writing–review&editing:AdrielliTinaLopesRego,JoshuaSnell,MartijnMeeter.
+                                                                                    
+                                                                                    
+                            References                                              
+                            1. VanBerkumJJA,BrownCM,ZwitserloodP,KooijmanV,HagoortP.Anticipatingupcomingwordsin
+                               discourse:evidencefromERPsandreadingtimes.JExpPsycholLearnMemCogn.2005;31(3):443.
+                               https://doi.org/10.1037/0278-7393.31.3.443PMID:15910130
+                            2. RaynerK,SlatteryTJ,DriegheD,LiversedgeSP.Eyemovementsandwordskippingduringreading:
+                               effectsofwordlengthandpredictability.JExpPsycholHumPerceptPerform.2011;37(2):514.https://
+                               doi.org/10.1037/a0020990PMID:21463086                
+                            3. RyskinR,NieuwlandMS.Predictionduringlanguagecomprehension:whatisnext?TrendsCognSci.
+                               2023;https://doi.org/10.1016/j.tics.2023.08.003PMID:37704456
+                                                                                    
+                                                                                    
+     PLOSComputationalBiology|https://doi.org/10.1371/journal.pcbi.1012117 September25,2024 22/24
+                                                                                    
+
+=== PAGE 23 ===
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOS COMPUTATIONAL BIOLOGY                         Languagemodelsoutperformclozepredictability
+                                                                                    
+                                                                                    
+                            4. SmithN,LevyR.Clozebutnocigar:Thecomplexrelationshipbetweencloze,corpus,andsubjective
+                               probabilitiesinlanguageprocessing. In:ProceedingsoftheAnnualMeetingoftheCognitiveScience
+                               Society.2011.                                        
+                            5. ReichleED,WarrenT,McConnellK.UsingEZReadertomodeltheeffectsofhigherlevellanguagepro-
+                               cessingoneyemovementsduringreading.PsychonBullRev.2009;16:1–21.https://doi.org/10.3758/
+                               PBR.16.1.1PMID:19145006                              
+                            6. SnellJ,vanLeipsigS,GraingerJ,MeeterM.OB1-reader:Amodelofwordrecognitionandeyemove-
+                               mentsintextreading.PsycholRev.2018;125(6):969.https://doi.org/10.1037/rev0000119PMID:
+                               30080066                                             
+                            7. EngbertR,NuthmannA,RichterEM,KlieglR.SWIFT:adynamicalmodelofsaccadegenerationduring
+                               reading.PsycholRev.2005;112(4):777.https://doi.org/10.1037/0033-295X.112.4.777PMID:
+                               16262468                                             
+                            8. LiX,PollatsekA.Anintegratedmodelofwordprocessingandeye-movementcontrolduringChinese
+                               reading.PsycholRev.2020;127(6):1139.https://doi.org/10.1037/rev0000248PMID:32673033
+                            9. ReillyRG,RadachR.Someempiricaltestsofaninteractiveactivationmodelofeyemovementcontrol
+                               inreading.CognSystRes.2006;7(1):34–55.               
+                            10. SmithN,LevyR.Theeffectofwordpredictabilityonreadingtimeislogarithmic.Cognition.2013;128
+                               (3):302–19.https://doi.org/10.1016/j.cognition.2013.02.013PMID:23747651
+                            11. HofmannMJ,RemusS,BiemannC,RadachR,KuchinkeL.Languagemodelsexplainwordreading
+                               timesbetterthanempiricalpredictability.FrontArtifIntell.2022;4:730570.https://doi.org/10.3389/frai.
+                               2021.730570PMID:35187472                             
+                            12. ReichleED.Computationalmodelsofreading:Ahandbook. OxfordUniversityPress;2021.
+                            13. ReichleED,PollatsekA,RaynerK.UsingEZReadertosimulateeyemovementsinnonreadingtasks:
+                               Aunifiedframeworkforunderstandingtheeye–mindlink.PsycholRev.2012;119(1):155.https://doi.
+                               org/10.1037/a0026473PMID:22229492                    
+                            14. TaylorWL.“Clozeprocedure”:Anewtoolformeasuringreadability.Journalismquarterly.1953;30
+                               (4):415–33.                                          
+                            15. RaynerK.Eyemovementsinreadingandinformationprocessing:20yearsofresearch.PsycholBull.
+                               1998;124(3):372.https://doi.org/10.1037/0033-2909.124.3.372PMID:9849112
+                            16. LevyR,FedorenkoE,BreenM,GibsonE.TheprocessingofextraposedstructuresinEnglish.Cogni-
+                               tion.2012;122(1):12–36.https://doi.org/10.1016/j.cognition.2011.07.012PMID:22035959
+                            17. JurafskyD,MartinJH.SpeechandLanguageProcessing.In2023.
+                            18. CevoliB,WatkinsC,RastleK.Predictionasabasisforskilledreading:insightsfrommodernlanguage
+                               models.RSocOpenSci.2022;9(6):211837.https://doi.org/10.1098/rsos.211837PMID:35719885
+                            19. HarrisZS.Distributionalstructure.Word.1954;10(2–3):146–62.
+                            20. ShainC,MeisterC,PimentelT,CotterellR,LevyRP.Large-scaleevidenceforlogarithmiceffectsof
+                               wordpredictabilityonreadingtime.2022;                
+                            21. StaubA,GrantM,AstheimerL,CohenA.Theinfluenceofclozeprobabilityanditemconstraintoncloze
+                               taskresponsetime.JMemLang.2015;82:1–17.              
+                            22. MichaelovJA,CoulsonS,BergenBK.Soclozeyetsofar:N400amplitudeisbetterpredictedbydistri-
+                               butionalinformationthanhumanpredictabilityjudgements.IEEETransCognDevSyst.2022;
+                            23. GoldsteinA,ZadaZ,BuchnikE,SchainM,PriceA,AubreyB,etal.Sharedcomputationalprinciplesfor
+                               languageprocessinginhumansanddeeplanguagemodels.NatNeurosci.2022;25(3):369–80.https://
+                               doi.org/10.1038/s41593-022-01026-4PMID:35260860      
+                            24. DoerigA,SommersRP,SeeligerK,RichardsB,IsmaelJ,LindsayGW,etal.Theneuroconnectionist
+                               researchprogramme.NatRevNeurosci.2023;1–20.          
+                            25. BrothersT,KuperbergGR.Wordpredictabilityeffectsarelinear,notlogarithmic:Implicationsforproba-
+                               bilisticmodelsofsentencecomprehension.JMemLang.2021;116:104174.https://doi.org/10.1016/j.
+                               jml.2020.104174PMID:33100508                         
+                            26. KuperbergGR,JaegerTF.Whatdowemeanbypredictioninlanguagecomprehension?LangCogn
+                               Neurosci.2016;31(1):32–59.https://doi.org/10.1080/23273798.2015.1102299PMID:27135040
+                            27. StaubA.Theeffectoflexicalpredictabilityoneyemovementsinreading:Criticalreviewandtheoretical
+                               interpretation.LangLinguistCompass.2015;9(8):311–27. 
+                            28. ParkerAJ,KirkbyJA,SlatteryTJ.Predictabilityeffectsduringreadingintheabsenceofparafovealpre-
+                               view.JournalofCognitivePsychology.2017;29(8):902–11. 
+                            29. LukeSG,ChristiansonK.TheProvoCorpus:Alargeeye-trackingcorpuswithpredictabilitynorms.
+                               BehavResMethods.2018;50:826–33.https://doi.org/10.3758/s13428-017-0908-4PMID:28523601
+     PLOSComputationalBiology|https://doi.org/10.1371/journal.pcbi.1012117 September25,2024 23/24
+
+=== PAGE 24 ===
+                                                                                    
+                                                                                    
+                                                                                    
+     PLOS COMPUTATIONAL BIOLOGY                         Languagemodelsoutperformclozepredictability
+                                                                                    
+                                                                                    
+                            30. RadfordA,WuJ,ChildR,LuanD,AmodeiD,SutskeverI,etal.Languagemodelsareunsupervised
+                               multitasklearners.OpenAIblog.2019;1(8):9.            
+                            31. TouvronH,LavrilT,IzacardG,MartinetX,LachauxMA,LacroixT,etal.Llama:Openandefficient
+                               foundationlanguagemodels. arXivpreprintarXiv:230213971.2023;
+                            32. WilcoxEG,MeisterCI,CotterellR,PimentelT.LanguageModelQualityCorrelateswithPsychometric
+                               PredictivePowerinMultipleLanguages. In:Proceedingsofthe2023ConferenceonEmpiricalMethods
+                               inNaturalLanguageProcessing.2023.p.7503–11.          
+                            33. LukeSG,ChristiansonK.Limitsonlexicalpredictionduringreading.CognPsychol.2016;88:22–60.
+                               https://doi.org/10.1016/j.cogpsych.2016.06.002PMID:27376659
+                            34. RmusM,PanTF,XiaL,CollinsAGE.Artificialneuralnetworksformodelidentificationandparameter
+                               estimationincomputationalcognitivemodels.PLoSComputBiol.2024;20(5):e1012119.https://doi.
+                               org/10.1371/journal.pcbi.1012119PMID:38748770        
+                            35. GoodkindA,BicknellK.Predictivepowerofwordsurprisalforreadingtimesisalinearfunctionoflan-
+                               guagemodelquality. In:Proceedingsofthe8thworkshoponcognitivemodelingandcomputationallin-
+                               guistics(CMCL2018).2018.p.10–8.                      
+                            36. OhBD,SchulerW.Whydoessurprisalfromlargertransformer-basedlanguagemodelsprovidea
+                               poorerfittohumanreadingtimes?TransAssocComputLinguist.2023;11:336–50.
+                            37. DeVardaA,MarelliM.Scalingincognitivemodelling:Amultilingualapproachtohumanreadingtimes.
+                               In:Proceedingsofthe61stAnnualMeetingoftheAssociationforComputationalLinguistics(Volume2:
+                               ShortPapers).2023.p.139–49.                          
+                            38. GuestO,MartinAE.Onlogicalinferenceoverbrains,behaviour,andartificialneuralnetworks.Comput
+                               BrainBehav.2023;1–15.                                
+                            39. AntonelloR,HuthA.Predictivecodingorjustfeaturediscovery?analternativeaccountofwhylanguage
+                               modelsfitbraindata.NeurobiologyofLanguage.2023;1–16. 
+                            40. RaoRPN,BallardDH.Predictivecodinginthevisualcortex:afunctionalinterpretationofsomeextra-
+                               classicalreceptive-fieldeffects.NatNeurosci.1999;2(1):79–87.https://doi.org/10.1038/4580PMID:
+                               10195184                                             
+                            41. FristonK.Thefree-energyprinciple:aroughguidetothebrain?TrendsCognSci.2009;13(7):293–
+                               301.https://doi.org/10.1016/j.tics.2009.04.005PMID:19559644
+                            42. ContrerasKallensP,Kristensen-McLachlanRD,ChristiansenMH.Largelanguagemodelsdemon-
+                               stratethepotentialofstatisticallearninginlanguage.CognSci.2023;47(3):e13256.https://doi.org/10.
+                               1111/cogs.13256PMID:36840975                         
+                            43. ChomskyN.Knowledgeoflanguage:Itsnature,origin,anduse.NewYork;1986.
+                            44. YangC,CrainS,BerwickRC,ChomskyN,BolhuisJJ.Thegrowthoflanguage:UniversalGrammar,
+                               experience,andprinciplesofcomputation.NeurosciBiobehavRev.2017;81:103–19.https://doi.org/
+                               10.1016/j.neubiorev.2016.12.023PMID:28077259         
+                            45. SaffranJR,AslinRN,NewportEL.Statisticallearningby8-month-oldinfants.Science(1979).1996;
+                               274(5294):1926–8.https://doi.org/10.1126/science.274.5294.1926PMID:8943209
+                            46. GoldbergAE.Explainmethis:Creativity,competition,andthepartialproductivityofconstructions.
+                               PrincetonUniversityPress;2019.                       
+                            47. KlieglR,GrabnerE,RolfsM,EngbertR.Length,frequency,andpredictabilityeffectsofwordsoneye
+                               movementsinreading.Europeanjournalofcognitivepsychology.2004;16(1–2):262–84.
+                            48. HambergerMJ,FriedmanD,RosenJ.Completionnormscollectedfromyoungerandolderadultsfor
+                               198sentencecontexts.BehaviorResearchMethods,Instruments,&Computers.1996;28:102–8.
+                            49. RaynerK,ChaceKH,SlatteryTJ,AshbyJ.Eyemovementsasreflectionsofcomprehensionprocesses
+                               inreading.Scientificstudiesofreading.2006;10(3):241–55.
+                            50. ReichleED,PollatsekA,FisherDL,RaynerK.Towardamodelofeyemovementcontrolinreading.
+                               PsycholRev.1998;105(1):125.https://doi.org/10.1037/0033-295x.105.1.125PMID:9450374
+                            51. SennrichR,HaddowB,BirchA.Neuralmachinetranslationofrarewordswithsubwordunits. arXivpre-
+                               printarXiv:150807909.2015;                           
+                            52. VanHeuvenWJB,ManderaP,KeuleersE,BrysbaertM.SUBTLEX-UK:Anewandimprovedwordfre-
+                               quencydatabaseforBritishEnglish.Quarterlyjournalofexperimentalpsychology.2014;67(6):1176–
+                               90.https://doi.org/10.1080/17470218.2013.850521PMID:24417251
+                            53. GraingerJ,VanHeuvenWJB.Modelingletterpositioncodinginprintedwordperception.2004;
+     PLOSComputationalBiology|https://doi.org/10.1371/journal.pcbi.1012117 September25,2024 24/24

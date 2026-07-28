@@ -89,6 +89,12 @@ The analysis has two complementary parts:
    `raw_delta`, `fixed_symmetric_sigma1`, `rms_side_scale_symmetric`,
    `fixed_ob1_gaussian`, and `learned_asymmetric`.
 
+The isolated
+[`behavior_level_validation`](behavior_level_validation/README.md) entry point
+packages the first analysis as a selected-checkpoint, conditional-Human-TRT
+comparison with compact reviewer tables. It uses actual passage-specific ET1
+values and OB1 word TVT; it is not a unit-impulse kernel analysis.
+
 The second analysis uses native T5 token geometry and character alignment from
 the ET1 output table, but it does not use the ET1-predicted TRT magnitudes.
 `raw_delta` is therefore an internal ID for the no-redistribution impulse
