@@ -46,6 +46,8 @@ PROFILE_METHODS = (
     "fixed_ratio4_same_rms",
     "support_rms_displacement_symmetric",
     "support_rms_displacement_ratio4",
+    "support_centered_sd_symmetric",
+    "support_centered_sd_ratio4",
     "mirrored_learned",
     "fixed_ob1_gaussian",
     "learned_asymmetric",
@@ -53,6 +55,16 @@ PROFILE_METHODS = (
 SUPPORT_RMS_DISPLACEMENT_METHODS = (
     "support_rms_displacement_symmetric",
     "support_rms_displacement_ratio4",
+)
+SUPPORT_CENTERED_SD_METHODS = (
+    "support_centered_sd_symmetric",
+    "support_centered_sd_ratio4",
+)
+SUPPORT_CENTERED_SD_METADATA_COLUMNS = (
+    "learned_support_centered_token_sd",
+    "support_centered_sd_symmetric_sigma",
+    "support_centered_sd_ratio4_sigma_left",
+    "support_centered_sd_ratio4_sigma_right",
 )
 INFERENTIAL_PROFILE_METHODS = tuple(
     method
@@ -64,6 +76,8 @@ REVIEWER_PLOT_METHODS = (
     "fixed_symmetric_sigma1",
     "support_rms_displacement_symmetric",
     "support_rms_displacement_ratio4",
+    "support_centered_sd_symmetric",
+    "support_centered_sd_ratio4",
     "mirrored_learned",
     "learned_asymmetric",
 )
@@ -91,6 +105,14 @@ PROFILE_DISPLAY_NAMES = {
     "support_rms_displacement_ratio4": (
         "4:1"
     ),
+    "support_centered_sd_symmetric": (
+        "Symmetric Gaussian matched to the learned kernel's centered "
+        "token-offset SD on the pooled fixation support"
+    ),
+    "support_centered_sd_ratio4": (
+        "4:1 Gaussian matched to the learned kernel's centered token-offset "
+        "SD on the pooled fixation support"
+    ),
     "mirrored_learned": (
         "Learned side scales exchanged as a parameter-level direction "
         "reversal under the same fixation-conditioned support"
@@ -108,6 +130,8 @@ PROFILE_SHORT_DISPLAY_NAMES = {
     "fixed_ratio4_same_rms": "4:1, parameter RMS",
     "support_rms_displacement_symmetric": "Symmetric, matched spread",
     "support_rms_displacement_ratio4": "4:1",
+    "support_centered_sd_symmetric": "Symmetric, matched centered SD",
+    "support_centered_sd_ratio4": "4:1, matched centered SD",
     "mirrored_learned": "Mirrored learned",
     "fixed_ob1_gaussian": "OB1 fit (in-sample)",
     "learned_asymmetric": "Learned asymmetric",
@@ -132,11 +156,17 @@ PROFILE_COMPARISONS = (
     ("learned_asymmetric", "fixed_ratio4_same_rms"),
     ("learned_asymmetric", "support_rms_displacement_symmetric"),
     ("learned_asymmetric", "support_rms_displacement_ratio4"),
+    ("learned_asymmetric", "support_centered_sd_symmetric"),
+    ("learned_asymmetric", "support_centered_sd_ratio4"),
     ("learned_asymmetric", "mirrored_learned"),
     ("fixed_ratio4_same_rms", "rms_side_scale_symmetric"),
     (
         "support_rms_displacement_ratio4",
         "support_rms_displacement_symmetric",
+    ),
+    (
+        "support_centered_sd_ratio4",
+        "support_centered_sd_symmetric",
     ),
 )
 OB1_MIN_ATTENTION_WIDTH = 3.0
@@ -1004,6 +1034,106 @@ def fit_scale_to_rms_token_displacement(
     }
 
 
+def centered_token_offset_sd(
+    profile: np.ndarray,
+    support: np.ndarray,
+) -> float:
+    """Return the probability-weighted SD around the profile's own mean."""
+    distribution = np.asarray(profile, dtype=float)
+    offsets = np.asarray(support, dtype=float)
+    if (
+        distribution.ndim != 1
+        or offsets.ndim != 1
+        or distribution.shape != offsets.shape
+        or distribution.size == 0
+        or not np.isfinite(distribution).all()
+        or not np.isfinite(offsets).all()
+        or np.any(distribution < 0)
+        or float(distribution.sum()) <= 0
+    ):
+        raise ValueError(
+            "Centered token-offset SD requires aligned finite nonnegative "
+            "profile and support vectors"
+        )
+    normalized = distribution / distribution.sum()
+    mean_offset = float(np.sum(normalized * offsets))
+    variance = float(
+        np.sum(normalized * (offsets - mean_offset) ** 2)
+    )
+    return float(np.sqrt(max(variance, 0.0)))
+
+
+def fit_scale_to_centered_token_offset_sd(
+    candidate_builder,
+    support: np.ndarray,
+    right_left_ratio: float,
+    target_centered_sd: float,
+) -> dict:
+    """Match pooled centered token-offset SD at a fixed side ratio."""
+    ratio = float(right_left_ratio)
+    target = float(target_centered_sd)
+    if not math.isfinite(ratio) or ratio <= 0:
+        raise ValueError("Centered-SD match ratio must be positive")
+    if not math.isfinite(target) or target <= 0:
+        raise ValueError(
+            "Target centered token-offset SD must be finite and positive"
+        )
+    lower_left = 0.05
+    upper_left = min(30.0, 30.0 / ratio)
+    if upper_left <= lower_left:
+        raise ValueError("Centered-SD match ratio exceeds scale bounds")
+
+    def objective(log_sigma_left: float) -> float:
+        sigma_left = math.exp(float(log_sigma_left))
+        sigma_right = ratio * sigma_left
+        realized = centered_token_offset_sd(
+            candidate_builder(sigma_left, sigma_right),
+            support,
+        )
+        return float((realized - target) ** 2)
+
+    result = minimize_scalar(
+        objective,
+        bounds=(math.log(lower_left), math.log(upper_left)),
+        method="bounded",
+        options={"xatol": 1e-12, "maxiter": 500},
+    )
+    if not result.success or not math.isfinite(float(result.fun)):
+        raise RuntimeError(
+            "Centered-SD scale match failed: "
+            f"{result.message}"
+        )
+    sigma_left = math.exp(float(result.x))
+    sigma_right = ratio * sigma_left
+    achieved = centered_token_offset_sd(
+        candidate_builder(sigma_left, sigma_right),
+        support,
+    )
+    if not math.isclose(
+        achieved,
+        target,
+        rel_tol=1e-7,
+        abs_tol=1e-8,
+    ):
+        raise RuntimeError(
+            "Requested centered token-offset SD is not attainable within "
+            "the declared sigma bounds"
+        )
+    return {
+        "sigma_left": float(sigma_left),
+        "sigma_right": float(sigma_right),
+        "right_left_ratio": ratio,
+        "target_centered_token_offset_sd": target,
+        "achieved_centered_token_offset_sd": achieved,
+        "absolute_match_error": abs(achieved - target),
+        "sigma_bounds": [0.05, 30.0],
+        "fit_scope": (
+            "pooled fixation-conditioned candidate support; target derived "
+            "from the frozen learned kernel, not from OB1 attention weights"
+        ),
+    }
+
+
 def fit_ob1_gaussian_prior(
     reference_profile: np.ndarray,
     support: np.ndarray,
@@ -1216,6 +1346,12 @@ def gaussian_parameter_status(
             "realized RMS token displacement on the fixation-conditioned "
             "support; no OB1 attention weights used"
         )
+    if model_id in SUPPORT_CENTERED_SD_METHODS:
+        return (
+            "scale selected to match the frozen learned kernel's pooled "
+            "centered token-offset SD on the fixation-conditioned support; "
+            "no OB1 attention weights used"
+        )
     if model_id == "mirrored_learned":
         return (
             "frozen learned side scales exchanged at the parameter level "
@@ -1245,6 +1381,7 @@ def gaussian_parameter_diagnostics(
     unconstrained_fit: dict,
     candidate_support_policy: str,
     include_support_rms_displacement_controls: bool = True,
+    include_support_centered_sd_controls: bool = False,
 ) -> pd.DataFrame:
     """Compare fixed controls with constrained and unconstrained OB1 fits."""
     learned_left = float(checkpoint_record["learned_sigma_left"])
@@ -1354,6 +1491,44 @@ def gaussian_parameter_diagnostics(
                 "black",
             ),
         ]
+    if include_support_centered_sd_controls:
+        insert_at = (
+            5 if include_support_rms_displacement_controls else 3
+        )
+        fixed_specs[insert_at:insert_at] = [
+            (
+                "support_centered_sd_symmetric",
+                "Symmetric, matched centered SD",
+                checkpoint_record[
+                    "support_centered_sd_symmetric_sigma"
+                ],
+                checkpoint_record[
+                    "support_centered_sd_symmetric_sigma"
+                ],
+                False,
+                1,
+                "h",
+                58,
+                "#44AA99",
+                "black",
+            ),
+            (
+                "support_centered_sd_ratio4",
+                "4:1, matched centered SD",
+                checkpoint_record[
+                    "support_centered_sd_ratio4_sigma_left"
+                ],
+                checkpoint_record[
+                    "support_centered_sd_ratio4_sigma_right"
+                ],
+                False,
+                1,
+                ">",
+                58,
+                "#CC6677",
+                "black",
+            ),
+        ]
     fitted_specs = []
     for model_id, label, ratio in (
         ("ob1_fit_symmetric", "OB1 fit, ratio 1", 1.0),
@@ -1419,55 +1594,60 @@ def gaussian_parameter_diagnostics(
         left_mass = float(candidate[offsets < 0].sum())
         center_mass = float(candidate[offsets == 0].sum())
         right_mass = float(candidate[offsets > 0].sum())
-        records.append(
-            {
-                "checkpoint_id": checkpoint_record["checkpoint_id"],
-                "ob1_attention_skew": float(ob1_attention_skew),
-                "model_id": model_id,
-                "short_label": label,
-                "sigma_left": float(sigma_left),
-                "sigma_right": float(sigma_right),
-                "right_left_ratio": float(sigma_right / sigma_left),
-                "quadratic_side_scale": rms_scale_symmetric_sigma(
-                    sigma_left,
-                    sigma_right,
-                ),
-                "realized_rms_token_displacement": rms_token_displacement(
-                    candidate,
-                    offsets,
-                ),
-                "fitted_to_same_ob1_profile": fitted_to_ob1,
-                "fit_parameter_count": fit_parameters,
-                "parameter_status": gaussian_parameter_status(
-                    model_id,
-                    fitted_to_ob1,
-                ),
-                **profile_metrics(
-                    reference_profile,
-                    candidate,
-                    offsets,
-                ),
-                "left_mass": left_mass,
-                "center_mass": center_mass,
-                "right_mass": right_mass,
-                "distant_right_mass": float(
-                    candidate[offsets >= 2].sum()
-                ),
-                "right_share_of_noncenter_mass": (
-                    right_mass / (left_mass + right_mass)
-                    if left_mass + right_mass > 0
-                    else np.nan
-                ),
-                "metric_scope": (
-                    "descriptive fixation-weighted pooled profile; "
-                    "no passage bootstrap"
-                ),
-                "landscape_marker": marker,
-                "landscape_marker_size": marker_size,
-                "landscape_facecolor": facecolor,
-                "landscape_edgecolor": edgecolor,
-            }
-        )
+        record = {
+            "checkpoint_id": checkpoint_record["checkpoint_id"],
+            "ob1_attention_skew": float(ob1_attention_skew),
+            "model_id": model_id,
+            "short_label": label,
+            "sigma_left": float(sigma_left),
+            "sigma_right": float(sigma_right),
+            "right_left_ratio": float(sigma_right / sigma_left),
+            "quadratic_side_scale": rms_scale_symmetric_sigma(
+                sigma_left,
+                sigma_right,
+            ),
+            "realized_rms_token_displacement": rms_token_displacement(
+                candidate,
+                offsets,
+            ),
+            "realized_mean_token_offset": float(
+                np.sum(candidate * offsets)
+            ),
+            "realized_centered_token_offset_sd": (
+                centered_token_offset_sd(candidate, offsets)
+            ),
+            "fitted_to_same_ob1_profile": fitted_to_ob1,
+            "fit_parameter_count": fit_parameters,
+            "parameter_status": gaussian_parameter_status(
+                model_id,
+                fitted_to_ob1,
+            ),
+            **profile_metrics(
+                reference_profile,
+                candidate,
+                offsets,
+            ),
+            "left_mass": left_mass,
+            "center_mass": center_mass,
+            "right_mass": right_mass,
+            "distant_right_mass": float(
+                candidate[offsets >= 2].sum()
+            ),
+            "right_share_of_noncenter_mass": (
+                right_mass / (left_mass + right_mass)
+                if left_mass + right_mass > 0
+                else np.nan
+            ),
+            "metric_scope": (
+                "descriptive fixation-weighted pooled profile; "
+                "no passage bootstrap"
+            ),
+            "landscape_marker": marker,
+            "landscape_marker_size": marker_size,
+            "landscape_facecolor": facecolor,
+            "landscape_edgecolor": edgecolor,
+        }
+        records.append(record)
     return pd.DataFrame(records)
 
 
@@ -1503,6 +1683,7 @@ def summarize_profile_metrics(
             "support_rms_displacement_symmetric_sigma",
             "support_rms_displacement_ratio4_sigma_left",
             "support_rms_displacement_ratio4_sigma_right",
+            *SUPPORT_CENTERED_SD_METADATA_COLUMNS,
         ):
             if column in group:
                 values = group[column].drop_duplicates()
@@ -1564,6 +1745,7 @@ def profile_paired_contrasts(
             "support_rms_displacement_symmetric_sigma",
             "support_rms_displacement_ratio4_sigma_left",
             "support_rms_displacement_ratio4_sigma_right",
+            *SUPPORT_CENTERED_SD_METADATA_COLUMNS,
         ):
             if column in skew_metrics:
                 values = skew_metrics[column].drop_duplicates()
@@ -1641,6 +1823,7 @@ def compare_attention_profiles(
     candidate_support_policy: str = "fixation_matched",
     landscape_sigma_values: np.ndarray | None = None,
     skip_support_rms_displacement_controls: bool = False,
+    include_support_centered_sd_controls: bool = False,
 ) -> dict:
     """Compare allocation kernels with a projected OB1 attention component."""
     support_policy_label, analysis_estimand = (
@@ -1652,6 +1835,10 @@ def compare_attention_profiles(
         if not (
             skip_support_rms_displacement_controls
             and method in SUPPORT_RMS_DISPLACEMENT_METHODS
+        )
+        and not (
+            not include_support_centered_sd_controls
+            and method in SUPPORT_CENTERED_SD_METHODS
         )
     )
     active_inferential_methods = tuple(
@@ -1828,6 +2015,54 @@ def compare_attention_profiles(
             "fixed_ratio4": ratio4_match,
         }
 
+    support_centered_sd_matches = {}
+    if include_support_centered_sd_controls:
+        for sigma_record in normalized_records:
+            checkpoint_id = sigma_record["checkpoint_id"]
+            learned_profile = pooled_candidate_builder(
+                sigma_record["learned_sigma_left"],
+                sigma_record["learned_sigma_right"],
+            )
+            learned_centered_sd = centered_token_offset_sd(
+                learned_profile,
+                support,
+            )
+            symmetric_match = fit_scale_to_centered_token_offset_sd(
+                pooled_candidate_builder,
+                support,
+                1.0,
+                learned_centered_sd,
+            )
+            ratio4_match = fit_scale_to_centered_token_offset_sd(
+                pooled_candidate_builder,
+                support,
+                FIXED_PSYCHOPHYSICAL_RATIO,
+                learned_centered_sd,
+            )
+            sigma_record.update(
+                {
+                    "learned_support_centered_token_sd": (
+                        learned_centered_sd
+                    ),
+                    "support_centered_sd_symmetric_sigma": (
+                        symmetric_match["sigma_left"]
+                    ),
+                    "support_centered_sd_ratio4_sigma_left": (
+                        ratio4_match["sigma_left"]
+                    ),
+                    "support_centered_sd_ratio4_sigma_right": (
+                        ratio4_match["sigma_right"]
+                    ),
+                }
+            )
+            support_centered_sd_matches[checkpoint_id] = {
+                "target_source": "frozen learned redistribution kernel",
+                "target_profile_uses_ob1_attention_weights": False,
+                "target_profile_uses_fixation_visible_support": True,
+                "symmetric_ratio1": symmetric_match,
+                "fixed_ratio4": ratio4_match,
+            }
+
     candidate_cache = {}
     for sigma_record in normalized_records:
         checkpoint_id = sigma_record["checkpoint_id"]
@@ -1877,6 +2112,27 @@ def compare_attention_profiles(
         if skip_support_rms_displacement_controls:
             for method in SUPPORT_RMS_DISPLACEMENT_METHODS:
                 method_sigmas.pop(method)
+        if include_support_centered_sd_controls:
+            method_sigmas.update(
+                {
+                    "support_centered_sd_symmetric": (
+                        sigma_record[
+                            "support_centered_sd_symmetric_sigma"
+                        ],
+                        sigma_record[
+                            "support_centered_sd_symmetric_sigma"
+                        ],
+                    ),
+                    "support_centered_sd_ratio4": (
+                        sigma_record[
+                            "support_centered_sd_ratio4_sigma_left"
+                        ],
+                        sigma_record[
+                            "support_centered_sd_ratio4_sigma_right"
+                        ],
+                    ),
+                }
+            )
         candidate_cache[checkpoint_id] = {}
         for method, (left, right) in method_sigmas.items():
             passage_candidates = candidate_profiles_by_passage(
@@ -1945,6 +2201,9 @@ def compare_attention_profiles(
                     candidate_support_policy,
                     include_support_rms_displacement_controls=(
                         not skip_support_rms_displacement_controls
+                    ),
+                    include_support_centered_sd_controls=(
+                        include_support_centered_sd_controls
                     ),
                 )
             )
@@ -2169,6 +2428,12 @@ def compare_attention_profiles(
                         )
                     ),
                     (
+                        "support-centered-SD controls use the evaluation "
+                        "fixation supports but not OB1 attention weights;"
+                        if include_support_centered_sd_controls
+                        else "support-centered-SD controls are disabled;"
+                    ),
+                    (
                         "constrained and free-ratio OB1 fits use the same "
                         "pooled reference and are descriptive in-sample "
                         "diagnostics"
@@ -2212,6 +2477,29 @@ def compare_attention_profiles(
                 "weights; the visible supports come from the evaluation "
                 "fixation contexts"
             )
+        ),
+        "support_centered_sd_matches": support_centered_sd_matches,
+        "support_centered_sd_controls_enabled": (
+            include_support_centered_sd_controls
+        ),
+        "support_centered_sd_definition": (
+            (
+                "sqrt(sum_d p(d) * (d - sum_j p(j) * j)^2) in relative "
+                "native T5-token offsets, with p pooled over the declared "
+                "fixation-conditioned support"
+            )
+            if include_support_centered_sd_controls
+            else None
+        ),
+        "support_centered_sd_control_scope": (
+            (
+                "post hoc support-conditioned width ablation: the target "
+                "comes from the frozen learned candidate and does not use "
+                "OB1 attention weights; centering removes the candidate's "
+                "mean directional shift before measuring dispersion"
+            )
+            if include_support_centered_sd_controls
+            else None
         ),
         "sigma_landscape_enabled": landscape_sigma_values is not None,
         "sigma_landscape_scope": (
@@ -2284,22 +2572,28 @@ def compare_attention_profiles(
     reference_mask = directionality["method"].eq(
         "ob1_attention_profile"
     )
+    reference_candidate_metadata = [
+        "source_accuracy",
+        "learned_sigma_left",
+        "learned_sigma_right",
+        "learned_right_left_ratio",
+        "fixed_symmetric_sigma",
+        "rms_side_scale_symmetric_sigma",
+        "fixed_ratio4_same_rms_sigma_left",
+        "fixed_ratio4_same_rms_sigma_right",
+        "learned_support_rms_token_displacement",
+        "support_rms_displacement_symmetric_sigma",
+        "support_rms_displacement_ratio4_sigma_left",
+        "support_rms_displacement_ratio4_sigma_right",
+        *(
+            column
+            for column in SUPPORT_CENTERED_SD_METADATA_COLUMNS
+            if column in directionality
+        ),
+    ]
     directionality.loc[
         reference_mask,
-        [
-            "source_accuracy",
-            "learned_sigma_left",
-            "learned_sigma_right",
-            "learned_right_left_ratio",
-            "fixed_symmetric_sigma",
-            "rms_side_scale_symmetric_sigma",
-            "fixed_ratio4_same_rms_sigma_left",
-            "fixed_ratio4_same_rms_sigma_right",
-            "learned_support_rms_token_displacement",
-            "support_rms_displacement_symmetric_sigma",
-            "support_rms_displacement_ratio4_sigma_left",
-            "support_rms_displacement_ratio4_sigma_right",
-        ],
+        reference_candidate_metadata,
     ] = np.nan
     reviewer_summary = build_reviewer_profile_summary(
         result_table,
@@ -2332,6 +2626,8 @@ def build_reviewer_profile_summary(
         "fixed_ratio4_same_rms",
         "support_rms_displacement_symmetric",
         "support_rms_displacement_ratio4",
+        "support_centered_sd_symmetric",
+        "support_centered_sd_ratio4",
         "mirrored_learned",
         "learned_asymmetric",
     )
@@ -2361,85 +2657,87 @@ def build_reviewer_profile_summary(
     ].copy()
     reference_rows = []
     for reference in references.itertuples():
-        reference_rows.append(
-            {
-                "checkpoint_id": reference.checkpoint_id,
-                "ob1_attention_skew": reference.ob1_attention_skew,
-                "method": reference.method,
-                "display_name": reference.display_name,
-                "passages": result_table.loc[
-                    result_table["checkpoint_id"].eq(
-                        reference.checkpoint_id
-                    )
-                    & result_table["ob1_attention_skew"].eq(
-                        reference.ob1_attention_skew
-                    ),
-                    "passages",
-                ].iloc[0],
-                "source_accuracy": np.nan,
-                "learned_sigma_left": np.nan,
-                "learned_sigma_right": np.nan,
-                "learned_right_left_ratio": np.nan,
-                "fixed_symmetric_sigma": np.nan,
-                "rms_side_scale_symmetric_sigma": np.nan,
-                "fixed_ratio4_same_rms_sigma_left": np.nan,
-                "fixed_ratio4_same_rms_sigma_right": np.nan,
-                "learned_support_rms_token_displacement": np.nan,
-                "support_rms_displacement_symmetric_sigma": np.nan,
-                "support_rms_displacement_ratio4_sigma_left": np.nan,
-                "support_rms_displacement_ratio4_sigma_right": np.nan,
-                "profile_spearman": np.nan,
-                "profile_spearman_ci_low": np.nan,
-                "profile_spearman_ci_high": np.nan,
-                "js_divergence": np.nan,
-                "js_divergence_ci_low": np.nan,
-                "js_divergence_ci_high": np.nan,
-                "hellinger_distance": np.nan,
-                "hellinger_distance_ci_low": np.nan,
-                "hellinger_distance_ci_high": np.nan,
-                "total_variation_distance": np.nan,
-                "total_variation_distance_ci_low": np.nan,
-                "total_variation_distance_ci_high": np.nan,
-                "overlap_coefficient": np.nan,
-                "overlap_coefficient_ci_low": np.nan,
-                "overlap_coefficient_ci_high": np.nan,
-                "token_offset_wasserstein": np.nan,
-                "token_offset_wasserstein_ci_low": np.nan,
-                "token_offset_wasserstein_ci_high": np.nan,
-                "reference_profile": reference.reference_profile,
-                "analysis_estimand": reference.analysis_estimand,
-                "actual_et1_trt_magnitudes_used": False,
-                "candidate_support_policy": (
-                    reference.candidate_support_policy
+        reference_row = {
+            "checkpoint_id": reference.checkpoint_id,
+            "ob1_attention_skew": reference.ob1_attention_skew,
+            "method": reference.method,
+            "display_name": reference.display_name,
+            "passages": result_table.loc[
+                result_table["checkpoint_id"].eq(
+                    reference.checkpoint_id
+                )
+                & result_table["ob1_attention_skew"].eq(
+                    reference.ob1_attention_skew
                 ),
-                "candidate_support_policy_label": (
-                    reference.candidate_support_policy_label
-                ),
-                "ci_scope": "not applicable: this row is the reference",
-                "profile_component": reference.profile_component,
-                "fixation_weighting": reference.fixation_weighting,
-                "profile_spearman_scope": PROFILE_SPEARMAN_SCOPE,
-                "distribution_metric_scope": (
-                    PROFILE_DISTRIBUTION_METRIC_SCOPE
-                ),
-                "trajectory_attention_skew": (
-                    reference.trajectory_attention_skew
-                ),
-                "requested_skew_matches_trajectory": (
-                    reference.requested_skew_matches_trajectory
-                ),
-                "attention_skew_analysis_role": (
-                    reference.attention_skew_analysis_role
-                ),
-                "left_mass": reference.left_mass,
-                "center_mass": reference.center_mass,
-                "right_mass": reference.right_mass,
-                "right_share_of_noncenter_mass": (
-                    reference.right_share_of_noncenter_mass
-                ),
-                "row_role": "OB1 reference profile",
-            }
-        )
+                "passages",
+            ].iloc[0],
+            "source_accuracy": np.nan,
+            "learned_sigma_left": np.nan,
+            "learned_sigma_right": np.nan,
+            "learned_right_left_ratio": np.nan,
+            "fixed_symmetric_sigma": np.nan,
+            "rms_side_scale_symmetric_sigma": np.nan,
+            "fixed_ratio4_same_rms_sigma_left": np.nan,
+            "fixed_ratio4_same_rms_sigma_right": np.nan,
+            "learned_support_rms_token_displacement": np.nan,
+            "support_rms_displacement_symmetric_sigma": np.nan,
+            "support_rms_displacement_ratio4_sigma_left": np.nan,
+            "support_rms_displacement_ratio4_sigma_right": np.nan,
+            "profile_spearman": np.nan,
+            "profile_spearman_ci_low": np.nan,
+            "profile_spearman_ci_high": np.nan,
+            "js_divergence": np.nan,
+            "js_divergence_ci_low": np.nan,
+            "js_divergence_ci_high": np.nan,
+            "hellinger_distance": np.nan,
+            "hellinger_distance_ci_low": np.nan,
+            "hellinger_distance_ci_high": np.nan,
+            "total_variation_distance": np.nan,
+            "total_variation_distance_ci_low": np.nan,
+            "total_variation_distance_ci_high": np.nan,
+            "overlap_coefficient": np.nan,
+            "overlap_coefficient_ci_low": np.nan,
+            "overlap_coefficient_ci_high": np.nan,
+            "token_offset_wasserstein": np.nan,
+            "token_offset_wasserstein_ci_low": np.nan,
+            "token_offset_wasserstein_ci_high": np.nan,
+            "reference_profile": reference.reference_profile,
+            "analysis_estimand": reference.analysis_estimand,
+            "actual_et1_trt_magnitudes_used": False,
+            "candidate_support_policy": (
+                reference.candidate_support_policy
+            ),
+            "candidate_support_policy_label": (
+                reference.candidate_support_policy_label
+            ),
+            "ci_scope": "not applicable: this row is the reference",
+            "profile_component": reference.profile_component,
+            "fixation_weighting": reference.fixation_weighting,
+            "profile_spearman_scope": PROFILE_SPEARMAN_SCOPE,
+            "distribution_metric_scope": (
+                PROFILE_DISTRIBUTION_METRIC_SCOPE
+            ),
+            "trajectory_attention_skew": (
+                reference.trajectory_attention_skew
+            ),
+            "requested_skew_matches_trajectory": (
+                reference.requested_skew_matches_trajectory
+            ),
+            "attention_skew_analysis_role": (
+                reference.attention_skew_analysis_role
+            ),
+            "left_mass": reference.left_mass,
+            "center_mass": reference.center_mass,
+            "right_mass": reference.right_mass,
+            "right_share_of_noncenter_mass": (
+                reference.right_share_of_noncenter_mass
+            ),
+            "row_role": "OB1 reference profile",
+        }
+        for column in SUPPORT_CENTERED_SD_METADATA_COLUMNS:
+            if column in result_table:
+                reference_row[column] = np.nan
+        reference_rows.append(reference_row)
     combined = pd.concat(
         [candidates, pd.DataFrame(reference_rows)],
         ignore_index=True,
@@ -2452,9 +2750,11 @@ def build_reviewer_profile_summary(
         "fixed_ratio4_same_rms": 3,
         "support_rms_displacement_symmetric": 4,
         "support_rms_displacement_ratio4": 5,
-        "mirrored_learned": 6,
-        "learned_asymmetric": 7,
-        "ob1_attention_profile": 8,
+        "support_centered_sd_symmetric": 6,
+        "support_centered_sd_ratio4": 7,
+        "mirrored_learned": 8,
+        "learned_asymmetric": 9,
+        "ob1_attention_profile": 10,
     }
     combined["_method_order"] = combined["method"].map(method_order)
     combined["rightward_share_scope"] = RIGHTWARD_SHARE_SCOPE
@@ -2654,6 +2954,16 @@ def plot_attention_profiles(
             1.5,
         ),
         (
+            "support_centered_sd_symmetric",
+            "Symmetric Gaussian (matched centered SD)",
+            1.5,
+        ),
+        (
+            "support_centered_sd_ratio4",
+            "4:1 Gaussian (matched centered SD)",
+            1.5,
+        ),
+        (
             "mirrored_learned",
             "Mirrored learned Gaussian",
             1.5,
@@ -2720,60 +3030,62 @@ def summarize_directionality(profiles: pd.DataFrame) -> pd.DataFrame:
             center = float(skew_profiles.loc[offsets.eq(0), method].sum())
             right = float(skew_profiles.loc[offsets.gt(0), method].sum())
             noncenter = left + right
-            records.append(
-                {
-                    "checkpoint_id": checkpoint_id,
-                    "ob1_attention_skew": float(skew),
-                    "method": method,
-                    "source_accuracy": skew_profiles[
-                        "source_accuracy"
-                    ].iloc[0],
-                    "learned_sigma_left": skew_profiles[
-                        "learned_sigma_left"
-                    ].iloc[0],
-                    "learned_sigma_right": skew_profiles[
-                        "learned_sigma_right"
-                    ].iloc[0],
-                    "learned_right_left_ratio": skew_profiles[
-                        "learned_right_left_ratio"
-                    ].iloc[0],
-                    "fixed_symmetric_sigma": skew_profiles[
-                        "fixed_symmetric_sigma"
-                    ].iloc[0],
-                    "rms_side_scale_symmetric_sigma": skew_profiles[
-                        "rms_side_scale_symmetric_sigma"
-                    ].iloc[0],
-                    "fixed_ratio4_same_rms_sigma_left": skew_profiles[
-                        "fixed_ratio4_same_rms_sigma_left"
-                    ].iloc[0],
-                    "fixed_ratio4_same_rms_sigma_right": skew_profiles[
-                        "fixed_ratio4_same_rms_sigma_right"
-                    ].iloc[0],
-                    "learned_support_rms_token_displacement": skew_profiles[
-                        "learned_support_rms_token_displacement"
-                    ].iloc[0],
-                    "support_rms_displacement_symmetric_sigma": (
-                        skew_profiles[
-                            "support_rms_displacement_symmetric_sigma"
-                        ].iloc[0]
-                    ),
-                    "support_rms_displacement_ratio4_sigma_left": (
-                        skew_profiles[
-                            "support_rms_displacement_ratio4_sigma_left"
-                        ].iloc[0]
-                    ),
-                    "support_rms_displacement_ratio4_sigma_right": (
-                        skew_profiles[
-                            "support_rms_displacement_ratio4_sigma_right"
-                        ].iloc[0]
-                    ),
-                    "left_mass": left,
-                    "center_mass": center,
-                    "right_mass": right,
-                    "right_minus_left_mass": right - left,
-                    "right_share_of_noncenter_mass": (
-                        right / noncenter if noncenter > 0 else np.nan
-                    ),
-                }
-            )
+            record = {
+                "checkpoint_id": checkpoint_id,
+                "ob1_attention_skew": float(skew),
+                "method": method,
+                "source_accuracy": skew_profiles[
+                    "source_accuracy"
+                ].iloc[0],
+                "learned_sigma_left": skew_profiles[
+                    "learned_sigma_left"
+                ].iloc[0],
+                "learned_sigma_right": skew_profiles[
+                    "learned_sigma_right"
+                ].iloc[0],
+                "learned_right_left_ratio": skew_profiles[
+                    "learned_right_left_ratio"
+                ].iloc[0],
+                "fixed_symmetric_sigma": skew_profiles[
+                    "fixed_symmetric_sigma"
+                ].iloc[0],
+                "rms_side_scale_symmetric_sigma": skew_profiles[
+                    "rms_side_scale_symmetric_sigma"
+                ].iloc[0],
+                "fixed_ratio4_same_rms_sigma_left": skew_profiles[
+                    "fixed_ratio4_same_rms_sigma_left"
+                ].iloc[0],
+                "fixed_ratio4_same_rms_sigma_right": skew_profiles[
+                    "fixed_ratio4_same_rms_sigma_right"
+                ].iloc[0],
+                "learned_support_rms_token_displacement": skew_profiles[
+                    "learned_support_rms_token_displacement"
+                ].iloc[0],
+                "support_rms_displacement_symmetric_sigma": (
+                    skew_profiles[
+                        "support_rms_displacement_symmetric_sigma"
+                    ].iloc[0]
+                ),
+                "support_rms_displacement_ratio4_sigma_left": (
+                    skew_profiles[
+                        "support_rms_displacement_ratio4_sigma_left"
+                    ].iloc[0]
+                ),
+                "support_rms_displacement_ratio4_sigma_right": (
+                    skew_profiles[
+                        "support_rms_displacement_ratio4_sigma_right"
+                    ].iloc[0]
+                ),
+                "left_mass": left,
+                "center_mass": center,
+                "right_mass": right,
+                "right_minus_left_mass": right - left,
+                "right_share_of_noncenter_mass": (
+                    right / noncenter if noncenter > 0 else np.nan
+                ),
+            }
+            for column in SUPPORT_CENTERED_SD_METADATA_COLUMNS:
+                if column in skew_profiles:
+                    record[column] = skew_profiles[column].iloc[0]
+            records.append(record)
     return pd.DataFrame(records)

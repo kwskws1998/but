@@ -1361,6 +1361,11 @@ def command_compare_attention_profile(args: argparse.Namespace) -> None:
             "skip_support_rms_displacement_controls",
             False,
         ),
+        include_support_centered_sd_controls=getattr(
+            args,
+            "with_support_centered_sd_controls",
+            False,
+        ),
     )
     artifacts["audit"].update(
         {
@@ -1768,6 +1773,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Omit the two post hoc controls whose scales are matched to each "
             "learned kernel on the evaluation fixation supports."
+        ),
+    )
+    attention.add_argument(
+        "--with-support-centered-sd-controls",
+        action="store_true",
+        help=(
+            "Add symmetric and fixed-4:1 controls matched to each learned "
+            "kernel's centered token-offset SD on the pooled evaluation "
+            "fixation supports."
         ),
     )
     attention.add_argument(

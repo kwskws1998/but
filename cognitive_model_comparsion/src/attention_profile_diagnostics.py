@@ -140,7 +140,10 @@ def plot_metric_comparison(
             values = table[metric].to_numpy(dtype=float)
             lows = table[f"{metric}_ci_low"].to_numpy(dtype=float)
             highs = table[f"{metric}_ci_high"].to_numpy(dtype=float)
-            errors = np.vstack((values - lows, highs - values))
+            errors = np.maximum(
+                np.vstack((values - lows, highs - values)),
+                0.0,
+            )
             shift = (skew_index - (len(skews) - 1) / 2.0) * 0.13
             axis.errorbar(
                 x + shift,

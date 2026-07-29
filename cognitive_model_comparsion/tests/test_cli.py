@@ -74,6 +74,7 @@ def test_attention_profile_help_separates_kernel_shape_from_et1_trt():
     assert "simulation IDs are pooled" in normalized_help
     assert "--allow-missing-ob1-manifest" in normalized_help
     assert "--candidate-support-policy" in normalized_help
+    assert "--with-support-centered-sd-controls" in normalized_help
     assert "exact visible offsets" in normalized_help
 
     default_args = parser.parse_args(
@@ -95,6 +96,7 @@ def test_attention_profile_help_separates_kernel_shape_from_et1_trt():
     )
     assert default_args.candidate_support_policy == "fixation_matched"
     assert not default_args.skip_support_rms_displacement_controls
+    assert not default_args.with_support_centered_sd_controls
     assert not default_args.with_sigma_landscape
     assert default_args.landscape_sigma_min == pytest.approx(0.1)
     assert default_args.landscape_sigma_max == pytest.approx(5.0)
@@ -139,6 +141,26 @@ def test_attention_profile_help_separates_kernel_shape_from_et1_trt():
         ]
     )
     assert skipped_args.skip_support_rms_displacement_controls
+
+    centered_sd_args = parser.parse_args(
+        [
+            "compare-attention-profile",
+            "--sigma-left",
+            "0.4",
+            "--sigma-right",
+            "3.4",
+            "--checkpoint-id",
+            "selected",
+            "--et1-dir",
+            "outputs/et1",
+            "--ob1-dir",
+            "outputs/ob1",
+            "--output-dir",
+            "outputs/attention",
+            "--with-support-centered-sd-controls",
+        ]
+    )
+    assert centered_sd_args.with_support_centered_sd_controls
 
 
 def valid_ob1_manifest_inputs():

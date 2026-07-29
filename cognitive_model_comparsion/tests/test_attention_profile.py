@@ -17,8 +17,10 @@ from cognitive_model_comparsion.src.attention_profile import (
     PROFILE_SPEARMAN_SCOPE,
     RIGHTWARD_SHARE_SCOPE,
     build_t5_letter_geometry,
+    centered_token_offset_sd,
     compare_attention_profiles,
     effective_ob1_attention_width,
+    fit_scale_to_centered_token_offset_sd,
     fit_ob1_gaussian_prior,
     gaussian_weights,
     ob1_reference_display_name,
@@ -179,6 +181,10 @@ def test_profile_comparison_writes_width_direction_and_fit_diagnostics(
         "mirrored_learned",
         "learned_asymmetric",
     }
+    assert not artifacts["audit"][
+        "support_centered_sd_controls_enabled"
+    ]
+    assert artifacts["audit"]["support_centered_sd_matches"] == {}
     assert "fixed_ob1_gaussian" in artifacts[
         "attention_profiles"
     ].columns
@@ -510,6 +516,100 @@ def test_profile_comparison_can_skip_support_matched_controls(tmp_path):
     assert (tmp_path / "kernel_metric_comparison.png").is_file()
     assert (tmp_path / "kernel_profile_regions.png").is_file()
     assert (tmp_path / "gaussian_parameter_diagnostics.png").is_file()
+
+
+def test_centered_sd_controls_match_width_without_using_ob1_weights():
+    """Opt-in controls match learned centered SD at ratios one and four."""
+    passages, tokens, fixations = synthetic_profile_inputs()
+    artifacts = compare_attention_profiles(
+        passages,
+        tokens,
+        fixations,
+        {
+            "checkpoint_id": "learned",
+            "sigma_left": 0.4,
+            "sigma_right": 3.4,
+        },
+        attention_skews=(3.0,),
+        bootstrap_samples=20,
+        seed=7,
+        include_support_centered_sd_controls=True,
+    )
+    methods = {
+        "support_centered_sd_symmetric",
+        "support_centered_sd_ratio4",
+    }
+
+    assert methods.issubset(set(artifacts["passage_metrics"]["method"]))
+    assert methods.issubset(artifacts["attention_profiles"].columns)
+    assert methods.issubset(
+        set(artifacts["parameter_diagnostics"]["model_id"])
+    )
+    audit = artifacts["audit"]
+    assert audit["support_centered_sd_controls_enabled"]
+    match = audit["support_centered_sd_matches"]["learned"]
+    assert not match["target_profile_uses_ob1_attention_weights"]
+    for fit_name in ("symmetric_ratio1", "fixed_ratio4"):
+        assert match[fit_name]["absolute_match_error"] < 1e-7
+    assert (
+        match["fixed_ratio4"]["sigma_right"]
+        / match["fixed_ratio4"]["sigma_left"]
+    ) == pytest.approx(4.0)
+
+    diagnostics = artifacts["parameter_diagnostics"].set_index(
+        "model_id"
+    )
+    learned_sd = diagnostics.loc[
+        "learned_fixed",
+        "realized_centered_token_offset_sd",
+    ]
+    for method in methods:
+        assert diagnostics.loc[
+            method,
+            "realized_centered_token_offset_sd",
+        ] == pytest.approx(learned_sd, rel=1e-7)
+    for row in diagnostics.itertuples():
+        assert row.realized_rms_token_displacement**2 == pytest.approx(
+            row.realized_centered_token_offset_sd**2
+            + row.realized_mean_token_offset**2,
+            rel=1e-10,
+            abs=1e-10,
+        )
+    result_table = artifacts["result_table"]
+    assert result_table[
+        [
+            "learned_support_centered_token_sd",
+            "support_centered_sd_symmetric_sigma",
+            "support_centered_sd_ratio4_sigma_left",
+            "support_centered_sd_ratio4_sigma_right",
+        ]
+    ].notna().all().all()
+
+
+def test_centered_sd_fitter_matches_probability_weighted_dispersion():
+    """The fixed-ratio optimizer matches SD around each profile mean."""
+    support = np.arange(-3, 7)
+
+    def builder(sigma_left, sigma_right):
+        """Build one normalized Gaussian on the test support."""
+        return gaussian_weights(support, sigma_left, sigma_right)
+
+    learned = builder(0.4, 3.4)
+    target = centered_token_offset_sd(learned, support)
+    fitted = fit_scale_to_centered_token_offset_sd(
+        builder,
+        support,
+        4.0,
+        target,
+    )
+    achieved = centered_token_offset_sd(
+        builder(fitted["sigma_left"], fitted["sigma_right"]),
+        support,
+    )
+
+    assert fitted["sigma_right"] / fitted["sigma_left"] == pytest.approx(4.0)
+    assert achieved == pytest.approx(target, rel=1e-7)
+    assert fitted["absolute_match_error"] < 1e-7
 
 
 def test_profile_metrics_exclude_shared_padding_zeros_from_spearman():
