@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
@@ -277,9 +278,14 @@ def run_ob1_subprocess(
     python_hash_seed: int = 20260725,
     workers: int = 1,
     stimulus_name: str = "Provo_Corpus",
+    attention_skew: float | None = None,
 ) -> None:
     """Run fixed-hash OB1 workers and merge their deterministic outputs."""
     stimulus_name = validate_stimulus_name(stimulus_name)
+    if attention_skew is not None and (
+        not math.isfinite(attention_skew) or attention_skew < 1
+    ):
+        raise ValueError("OB1 attention skew must be finite and at least one")
     if not seeds:
         raise ValueError("At least one OB1 virtual-reader seed is required")
     if len(set(seeds)) != len(seeds):
@@ -298,6 +304,7 @@ def run_ob1_subprocess(
             n_trials,
             python_hash_seed,
             stimulus_name,
+            attention_skew,
         )
         return
 
@@ -320,6 +327,7 @@ def run_ob1_subprocess(
             n_trials,
             python_hash_seed,
             stimulus_name,
+            attention_skew,
         )
         completed_chunks.append(([warmup_seed], warmup_dir))
 
@@ -330,7 +338,7 @@ def run_ob1_subprocess(
         parallel_chunks.append((chunk, chunk_dir))
 
     with ThreadPoolExecutor(max_workers=len(parallel_chunks) or 1) as executor:
-        futures = [
+        futures = {
             executor.submit(
                 run_ob1_worker,
                 runtime_dir,
@@ -339,11 +347,21 @@ def run_ob1_subprocess(
                 n_trials,
                 python_hash_seed,
                 stimulus_name,
-            )
+                attention_skew,
+            ): chunk
             for chunk, chunk_dir in parallel_chunks
-        ]
-        for future in futures:
+        }
+        for completed, future in enumerate(
+            as_completed(futures),
+            start=1,
+        ):
             future.result()
+            print(
+                "OB1 worker chunk completed "
+                f"{completed}/{len(futures)} "
+                f"(seeds={','.join(map(str, futures[future]))})",
+                flush=True,
+            )
 
     completed_chunks.extend(parallel_chunks)
     merge_ob1_worker_outputs(
@@ -354,6 +372,7 @@ def run_ob1_subprocess(
         python_hash_seed=python_hash_seed,
         n_trials=n_trials,
         stimulus_name=stimulus_name,
+        requested_attention_skew=attention_skew,
     )
 
 
@@ -389,6 +408,7 @@ def run_ob1_worker(
     n_trials: int,
     python_hash_seed: int,
     stimulus_name: str = "Provo_Corpus",
+    attention_skew: float | None = None,
 ) -> None:
     """Run one isolated OB1 subprocess for an explicit seed chunk."""
     if not seeds:
@@ -410,6 +430,8 @@ def run_ob1_worker(
         "--stimuli-filename",
         f"{stimulus_name}.csv",
     ]
+    if attention_skew is not None:
+        command.extend(["--attention-skew", str(float(attention_skew))])
     subprocess.run(
         command,
         check=True,
@@ -425,6 +447,7 @@ def merge_ob1_worker_outputs(
     python_hash_seed: int,
     n_trials: int | None = None,
     stimulus_name: str = "Provo_Corpus",
+    requested_attention_skew: float | None = None,
 ) -> None:
     """Merge worker CSVs and manifests into the serial output contract."""
     stimulus_name = validate_stimulus_name(stimulus_name)
@@ -501,6 +524,20 @@ def merge_ob1_worker_outputs(
         raise ValueError(
             "Requested OB1 n_trials disagrees with merged fixation passages"
         )
+    if parameters is None:
+        raise ValueError("Parallel OB1 output is missing model parameters")
+    actual_attention_skew = parameters.get("attention_skew")
+    if requested_attention_skew is not None:
+        if actual_attention_skew is None or not math.isclose(
+            float(actual_attention_skew),
+            float(requested_attention_skew),
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ):
+            raise ValueError(
+                "Merged OB1 attention skew differs from the requested value: "
+                f"{actual_attention_skew} versus {requested_attention_skew}"
+            )
     fixations.to_csv(output_dir / "ob1_fixations.csv", index=False)
     runtimes = sorted(runtimes, key=lambda item: item["simulation_id"])
     with (output_dir / "ob1_worker_manifest.json").open(
@@ -520,6 +557,7 @@ def merge_ob1_worker_outputs(
                 "workers_requested": workers_requested,
                 "worker_chunks": chunk_records,
                 "stimuli_filename": f"{stimulus_name}.csv",
+                "requested_attention_skew": requested_attention_skew,
             },
             handle,
             indent=2,

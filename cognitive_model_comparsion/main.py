@@ -531,6 +531,7 @@ def run_simulate_ob1(
     python_hash_seed: int,
     workers: int,
     corpus: str = "provo",
+    attention_skew: float | None = None,
 ) -> dict:
     """Prepare runtime, execute OB1, and aggregate word-level TVT."""
     passages, words = ensure_prepared(processed_dir, corpus)
@@ -597,6 +598,7 @@ def run_simulate_ob1(
         python_hash_seed=python_hash_seed,
         workers=workers,
         stimulus_name=stimulus_name,
+        attention_skew=attention_skew,
     )
     fixations = pd.read_csv(output_dir / "ob1_fixations.csv")
     eligible_words = words[
@@ -614,11 +616,20 @@ def run_simulate_ob1(
         expected_seeds=seeds,
     )
     audit = dict(artifacts[-1])
+    worker_manifest = json.loads(
+        (output_dir / "ob1_worker_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    trajectory_attention_skew = float(
+        worker_manifest["parameters"]["attention_skew"]
+    )
     audit.update(
         {
             "corpus": corpus,
             "stimulus_name": stimulus_name,
             "n_trials": int(resolved_n_trials),
+            "trajectory_attention_skew": trajectory_attention_skew,
         }
     )
     write_ob1_aggregation(output_dir, *artifacts[:-1], audit)
@@ -1045,6 +1056,7 @@ def command_simulate_ob1(args: argparse.Namespace) -> None:
         args.python_hash_seed,
         args.workers,
         corpus=args.corpus,
+        attention_skew=args.attention_skew,
     )
     print(json.dumps(audit, indent=2, sort_keys=True))
 
@@ -1676,6 +1688,15 @@ def build_parser() -> argparse.ArgumentParser:
     ob1.add_argument("--n-trials", type=int)
     ob1.add_argument("--python-hash-seed", type=int, default=20260725)
     ob1.add_argument("--workers", type=int, default=1)
+    ob1.add_argument(
+        "--attention-skew",
+        type=float,
+        help=(
+            "Override OB1 attention_skew during trajectory generation. "
+            "Omitting this option preserves the released implementation's "
+            "default."
+        ),
+    )
     ob1.set_defaults(handler=command_simulate_ob1)
 
     evaluate = subparsers.add_parser("evaluate")

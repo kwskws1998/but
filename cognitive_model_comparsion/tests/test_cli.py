@@ -55,6 +55,21 @@ def test_parser_exposes_all_required_subcommands():
     }
 
 
+def test_simulate_ob1_accepts_trajectory_attention_skew_override():
+    """The simulation CLI distinguishes trajectory skew from reweighting."""
+    args = build_parser().parse_args(
+        [
+            "simulate-ob1",
+            "--output-dir",
+            "outputs/ob1_skew4",
+            "--attention-skew",
+            "4",
+        ]
+    )
+
+    assert args.attention_skew == pytest.approx(4.0)
+
+
 def test_attention_profile_help_separates_kernel_shape_from_et1_trt():
     """The CLI states the estimand and the conditional bootstrap scope."""
     parser = build_parser()

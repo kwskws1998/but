@@ -10,6 +10,7 @@ from cognitive_model_comparsion.src.ob1_runner import (
     derived_cache_filenames,
     merge_ob1_worker_outputs,
     prepare_ob1_runtime,
+    run_ob1_worker,
     split_seed_chunks,
     stimulus_word_coordinates,
     transform_ob1_passage,
@@ -447,6 +448,39 @@ def test_seed_chunks_are_balanced_and_complete():
 
     assert [len(chunk) for chunk in chunks] == [4, 3, 3]
     assert sorted(seed for chunk in chunks for seed in chunk) == list(range(10))
+
+
+def test_ob1_worker_forwards_simulation_attention_skew(
+    tmp_path,
+    monkeypatch,
+):
+    """The trajectory worker receives the requested OB1 attention skew."""
+    captured = {}
+
+    def fake_run(command, check, env):
+        captured["command"] = command
+        captured["check"] = check
+        captured["env"] = env
+
+    monkeypatch.setattr(
+        "cognitive_model_comparsion.src.ob1_runner.subprocess.run",
+        fake_run,
+    )
+
+    run_ob1_worker(
+        tmp_path / "runtime",
+        tmp_path / "output",
+        [0, 1],
+        n_trials=55,
+        python_hash_seed=20260725,
+        attention_skew=4.0,
+    )
+
+    command = captured["command"]
+    skew_index = command.index("--attention-skew")
+    assert command[skew_index + 1] == "4.0"
+    assert captured["check"] is True
+    assert captured["env"]["PYTHONHASHSEED"] == "20260725"
 
 
 def test_parallel_worker_outputs_restore_global_simulation_order(tmp_path):

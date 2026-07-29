@@ -217,7 +217,41 @@ does not use OB1 attention weights, but it does use the evaluation fixation
 supports, so it is a post-hoc contextual ablation rather than an independent
 psychophysical prior.
 
-### Reuse the completed Provo 100-simulation output
+### Final trajectory-matched skew=3 and skew=4 comparison
+
+The final rebuttal analysis uses the existing 100 skew=3 virtual readers and
+independently generates 100 skew=4 virtual readers with the same seeds. It then
+analyzes the six frozen Llama-3-8B checkpoints separately under the matching
+trajectory condition and writes the equal-checkpoint table and figures.
+
+```bash
+cd /workspace/but
+source /workspace/but/.venv-cognitive-model-comparison/bin/activate
+
+python -u \
+  cognitive_model_comparsion/scripts/run_provo_skew4_trajectory_analysis.py \
+  --workers 40
+```
+
+The Python runner saves live output to
+`outputs/provo_rebuttal_experiment/trajectory_matched_skew3_skew4_20260729/experiment.log`.
+It validates that skew=3 and skew=4 use different fixation files, that each
+condition contains seeds 0 through 99 and all 55 passages, and that every
+reported attention row matches its trajectory-generation skew. Completed
+simulation or analysis steps are reused only after these checks pass.
+
+The final files are written under `final_tables_and_figures/`:
+
+- `reviewer_metric_table.csv` and `reviewer_metric_table.md`;
+- `llama3_8b_ob1_mean_profiles.png` and `.pdf`;
+- `llama3_8b_ob1_region_mass.png` and `.pdf`;
+- the corresponding mean-profile, regional-mass, and metric CSV files.
+
+### Legacy fixed-trajectory formula sensitivity
+
+The commands in this section reuse skew=3 trajectories for both attention
+formulas. They are retained only as a fixed-context sensitivity analysis and
+must not be described as independently generated skew=4 trajectories.
 
 Activate the isolated environment and verify the updated code:
 

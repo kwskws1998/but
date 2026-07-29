@@ -64,10 +64,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--input",
         type=Path,
-        required=True,
         help=(
             "Verification ZIP or extracted directory containing "
             "llama3_8b_attention/s01 through s06."
+        ),
+    )
+    parser.add_argument(
+        "--skew3-analysis-dir",
+        type=Path,
+        help=(
+            "Attention-profile output computed from trajectories generated "
+            "with OB1 attention_skew=3."
+        ),
+    )
+    parser.add_argument(
+        "--skew4-analysis-dir",
+        type=Path,
+        help=(
+            "Attention-profile output computed from trajectories generated "
+            "with OB1 attention_skew=4."
         ),
     )
     parser.add_argument(
@@ -160,6 +175,134 @@ def load_run_tables(
             f"Expected metric runs {expected_ids}, found {sorted(metrics)}"
         )
     return profiles, metrics
+
+
+def read_trajectory_matched_analysis(
+    path: Path,
+    expected_skew: float,
+    expected_runs: int,
+) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame], dict]:
+    """Load one analysis whose saved trajectories match its attention skew."""
+    source = path.expanduser().resolve()
+    profile_path = source / "kernel_profiles.csv"
+    metric_path = source / "reviewer_kernel_summary.csv"
+    audit_path = source / "attention_profile_audit.json"
+    for required in (profile_path, metric_path, audit_path):
+        if not required.is_file():
+            raise FileNotFoundError(required)
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    trajectory_skew = float(audit["trajectory_attention_skew"])
+    if not math.isclose(
+        trajectory_skew,
+        expected_skew,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ):
+        raise ValueError(
+            f"{source} contains attention_skew={trajectory_skew:g}, "
+            f"expected {expected_skew:g}"
+        )
+    if int(audit["checkpoint_count"]) != expected_runs:
+        raise ValueError(
+            f"{source} contains {audit['checkpoint_count']} checkpoints, "
+            f"expected {expected_runs}"
+        )
+    if int(audit["seed_count"]) != 100 or int(audit["passage_count"]) != 55:
+        raise ValueError(
+            f"{source} must contain 100 readers and 55 Provo passages"
+        )
+
+    profile_frame = pd.read_csv(profile_path)
+    metric_frame = pd.read_csv(metric_path)
+    expected_ids = [f"s{index:02d}" for index in range(1, expected_runs + 1)]
+    profiles: dict[str, pd.DataFrame] = {}
+    metrics: dict[str, pd.DataFrame] = {}
+    for run_id in expected_ids:
+        checkpoint_profile = profile_frame.loc[
+            profile_frame["checkpoint_id"].astype(str).str.startswith(run_id)
+            & profile_frame["ob1_attention_skew"].eq(expected_skew)
+        ].copy()
+        checkpoint_metric = metric_frame.loc[
+            metric_frame["checkpoint_id"].astype(str).str.startswith(run_id)
+            & metric_frame["ob1_attention_skew"].eq(expected_skew)
+        ].copy()
+        if checkpoint_profile.empty or checkpoint_metric.empty:
+            raise ValueError(
+                f"{source} is missing trajectory-matched rows for {run_id}"
+            )
+        for frame, label in (
+            (checkpoint_profile, "profile"),
+            (checkpoint_metric, "metric"),
+        ):
+            if "requested_skew_matches_trajectory" not in frame:
+                raise ValueError(
+                    f"{source} {label} table lacks skew provenance"
+                )
+            matched = frame["requested_skew_matches_trajectory"].astype(
+                str
+            ).str.lower()
+            if not matched.eq("true").all():
+                raise ValueError(
+                    f"{source} {label} rows for {run_id} are not "
+                    "trajectory matched"
+                )
+        profiles[run_id] = checkpoint_profile
+        metrics[run_id] = checkpoint_metric
+    return profiles, metrics, audit
+
+
+def load_trajectory_matched_tables(
+    skew3_path: Path,
+    skew4_path: Path,
+    expected_runs: int,
+) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame], dict]:
+    """Combine skew-specific analyses generated from matching trajectories."""
+    profiles3, metrics3, audit3 = read_trajectory_matched_analysis(
+        skew3_path,
+        3.0,
+        expected_runs,
+    )
+    profiles4, metrics4, audit4 = read_trajectory_matched_analysis(
+        skew4_path,
+        4.0,
+        expected_runs,
+    )
+    profiles = {
+        run_id: pd.concat(
+            [profiles3[run_id], profiles4[run_id]],
+            ignore_index=True,
+        )
+        for run_id in sorted(profiles3)
+    }
+    metrics = {
+        run_id: pd.concat(
+            [metrics3[run_id], metrics4[run_id]],
+            ignore_index=True,
+        )
+        for run_id in sorted(metrics3)
+    }
+    source_audit = {
+        "comparison_design": "trajectory_matched_skew3_and_skew4",
+        "skew3_analysis_dir": str(skew3_path.expanduser().resolve()),
+        "skew4_analysis_dir": str(skew4_path.expanduser().resolve()),
+        "skew3_ob1_fixations_sha256": audit3["ob1_fixations_sha256"],
+        "skew4_ob1_fixations_sha256": audit4["ob1_fixations_sha256"],
+        "skew3_ob1_worker_manifest_sha256": audit3[
+            "ob1_worker_manifest_sha256"
+        ],
+        "skew4_ob1_worker_manifest_sha256": audit4[
+            "ob1_worker_manifest_sha256"
+        ],
+    }
+    if (
+        source_audit["skew3_ob1_fixations_sha256"]
+        == source_audit["skew4_ob1_fixations_sha256"]
+    ):
+        raise ValueError(
+            "Skew 3 and skew 4 analyses unexpectedly use the same fixation "
+            "table"
+        )
+    return profiles, metrics, source_audit
 
 
 def validate_profile_frame(frame: pd.DataFrame, run_id: str) -> None:
@@ -427,12 +570,12 @@ def plot_profiles_and_metrics(
         -0.035,
         "Lines and bars are equal-checkpoint means; shading and error bars "
         "show ±1 SD across six checkpoints.\n"
-        "All conditions use the same mapped OB1–Provo window (n−1 to n+3). "
-        "The symmetric and asymmetric curves remain similar because their "
-        "overall token-space spread was matched checkpoint by checkpoint; "
-        "only left–right directionality differs.\n"
-        "Changing skew from 3 to 4 "
-        "narrows only OB1's left side; its peak and right side are unchanged.",
+        "Each panel uses 100 OB1 trajectories generated under the indicated "
+        "attention skew. Within each panel, all conditions use the same "
+        "mapped fixation contexts.\n"
+        "The paired symmetric and learned asymmetric kernels have matched "
+        "overall token-space spread checkpoint by checkpoint and differ in "
+        "left–right directionality.",
         ha="center",
         fontsize=8.5,
     )
@@ -551,12 +694,10 @@ def write_caption(path: Path) -> None:
         "only learned parameters and mapped token geometry. The two Gaussian "
         "conditions therefore share the same overall spread and differ mainly "
         "in left–right directionality, explaining their relatively small "
-        "metric differences. Changing OB1 skew from 3 to 4 narrows only the "
-        "left side of its Gaussian attention, while preserving its peak and "
-        "right side; the effect is further limited because the Provo window "
-        "contains fewer positions to the left. All conditions were evaluated "
-        "on the same OB1–Provo five-word window (n−1 to n+3) mapped to ET1 "
-        "T5 tokens."
+        "metric differences. The skew=3 and skew=4 panels use separate sets "
+        "of 100 OB1 trajectories generated under their corresponding skew. "
+        "Within each panel, all conditions were evaluated on the same "
+        "OB1–Provo five-word window (n−1 to n+3) mapped to ET1 T5 tokens."
     )
     path.write_text(caption + "\n", encoding="utf-8")
 
@@ -574,14 +715,84 @@ def write_region_caption(path: Path) -> None:
         "token positions within each region. The paired symmetric control can "
         "have unequal pooled left and right mass because every condition is "
         "restricted to the same right-heavy OB1–Provo window mapped to T5 "
-        "tokens."
+        "tokens. Each skew panel uses trajectories generated under that "
+        "same skew."
     )
     path.write_text(caption + "\n", encoding="utf-8")
 
 
+def write_reviewer_metric_table(
+    metric_summary: pd.DataFrame,
+    csv_path: Path,
+    markdown_path: Path,
+) -> None:
+    """Write the four reviewer metrics as equal-checkpoint mean values."""
+    rows = []
+    for condition in METHOD_ROWS:
+        record: dict[str, object] = {"Condition": condition}
+        for skew in (3.0, 4.0):
+            for metric in ("Spearman", "JS"):
+                selected = metric_summary.loc[
+                    metric_summary["condition"].eq(condition)
+                    & metric_summary["skew"].eq(skew)
+                    & metric_summary["metric"].eq(metric),
+                    "mean",
+                ]
+                if len(selected) != 1:
+                    raise ValueError(
+                        f"Expected one {condition}, skew={skew:g}, "
+                        f"{metric} aggregate"
+                    )
+                record[f"Skew={int(skew)} {metric}"] = float(
+                    selected.item()
+                )
+        rows.append(record)
+    table = pd.DataFrame(rows)
+    table.to_csv(csv_path, index=False)
+    lines = [
+        "| Condition | Skew=3 Spearman ↑ | Skew=3 JS ↓ | "
+        "Skew=4 Spearman ↑ | Skew=4 JS ↓ |",
+        "|---|---:|---:|---:|---:|",
+    ]
+    for row in table.itertuples(index=False):
+        lines.append(
+            f"| {row[0]} | {row[1]:.4f} | {row[2]:.4f} | "
+            f"{row[3]:.4f} | {row[4]:.4f} |"
+        )
+    markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def run(args: argparse.Namespace) -> dict:
     """Generate the requested six-checkpoint figure and summary tables."""
-    profiles, metrics = load_run_tables(args.input, args.expected_runs)
+    legacy_mode = args.input is not None
+    matched_mode = (
+        args.skew3_analysis_dir is not None
+        or args.skew4_analysis_dir is not None
+    )
+    if legacy_mode == matched_mode:
+        raise ValueError(
+            "Pass either --input or both --skew3-analysis-dir and "
+            "--skew4-analysis-dir"
+        )
+    if legacy_mode:
+        profiles, metrics = load_run_tables(args.input, args.expected_runs)
+        source_audit = {
+            "comparison_design": "legacy_combined_input",
+            "input": str(args.input.expanduser().resolve()),
+        }
+    else:
+        if (
+            args.skew3_analysis_dir is None
+            or args.skew4_analysis_dir is None
+        ):
+            raise ValueError(
+                "Both trajectory-matched analysis directories are required"
+            )
+        profiles, metrics, source_audit = load_trajectory_matched_tables(
+            args.skew3_analysis_dir,
+            args.skew4_analysis_dir,
+            args.expected_runs,
+        )
     profile_summary, region_summary = aggregate_profiles(profiles)
     metric_summary = aggregate_metrics(metrics)
     output_dir = args.output_dir.expanduser().resolve()
@@ -595,6 +806,8 @@ def run(args: argparse.Namespace) -> dict:
     region_pdf_path = output_dir / "llama3_8b_ob1_region_mass.pdf"
     caption_path = output_dir / "figure_caption.txt"
     region_caption_path = output_dir / "region_mass_caption.txt"
+    reviewer_table_path = output_dir / "reviewer_metric_table.csv"
+    reviewer_markdown_path = output_dir / "reviewer_metric_table.md"
     profile_summary.to_csv(profile_csv, index=False)
     region_summary.to_csv(region_csv, index=False)
     metric_summary.to_csv(metric_csv, index=False)
@@ -613,8 +826,13 @@ def run(args: argparse.Namespace) -> dict:
     )
     write_caption(caption_path)
     write_region_caption(region_caption_path)
+    write_reviewer_metric_table(
+        metric_summary,
+        reviewer_table_path,
+        reviewer_markdown_path,
+    )
     result = {
-        "input": str(args.input.expanduser().resolve()),
+        **source_audit,
         "run_ids": sorted(profiles),
         "checkpoint_count": len(profiles),
         "checkpoint_weighting": "equal",
@@ -627,6 +845,8 @@ def run(args: argparse.Namespace) -> dict:
         "metric_csv": str(metric_csv),
         "caption": str(caption_path),
         "region_mass_caption": str(region_caption_path),
+        "reviewer_metric_table_csv": str(reviewer_table_path),
+        "reviewer_metric_table_markdown": str(reviewer_markdown_path),
     }
     (output_dir / "figure_audit.json").write_text(
         json.dumps(result, indent=2) + "\n",

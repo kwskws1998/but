@@ -96,6 +96,7 @@ def parse_args() -> argparse.Namespace:
         "--stimuli-filename",
         default="Provo_Corpus.csv",
     )
+    parser.add_argument("--attention-skew", type=float)
     return parser.parse_args()
 
 
@@ -110,6 +111,10 @@ def main() -> None:
         raise ValueError("No OB1 seeds were provided")
     if os.environ.get("PYTHONHASHSEED") is None:
         raise RuntimeError("PYTHONHASHSEED must be fixed by the parent process")
+    if args.attention_skew is not None and (
+        not np.isfinite(args.attention_skew) or args.attention_skew < 1
+    ):
+        raise ValueError("--attention-skew must be finite and at least one")
     stimuli_filename = Path(args.stimuli_filename)
     if (
         stimuli_filename.name != args.stimuli_filename
@@ -156,6 +161,8 @@ def main() -> None:
         random.seed(seed)
         torch.manual_seed(seed)
         parameters = return_params(global_parameters)
+        if args.attention_skew is not None:
+            parameters.attention_skew = float(args.attention_skew)
         if parameters.prediction_flag:
             raise ValueError("The primary OB1 condition must disable predictability")
         if parameter_record is None:
