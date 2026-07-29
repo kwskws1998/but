@@ -9,6 +9,14 @@
       "sha256": "38aedcb29bc9171009916eb2bcc2375729f104a2a1005c64a563da94b611b9e7",
       "license": "CC BY 4.0"
     },
+    "provo_fixation_report": {
+      "source": "https://osf.io/download/z3eh6/",
+      "landing_page": "https://osf.io/sjefs/",
+      "destination": "data/raw/Provo_Corpus-Additional_Eyetracking_Data-Fixation_Report.csv",
+      "bytes": 303000864,
+      "sha256": "0d961a6508ed6caafdb4bc1025c067ecc97a0be07b13d3de0acafb5ef6c4fb7e",
+      "license": "CC BY 4.0"
+    },
     "provo_predictability": {
       "source": "https://osf.io/download/e4a2m/",
       "landing_page": "https://osf.io/sjefs/",
