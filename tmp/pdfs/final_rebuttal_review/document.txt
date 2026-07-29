@@ -1,0 +1,109 @@
+We thank the reviewer for the suggestion. We added a comparison with OB1-reader, an
+established cognitive model that explicitly represents asymmetric visuospatial attention
+during reading.
+
+We chose Llama 3-8B as it achieved the higher mean downstream accuracy (averaged over
+six seeds) than Llama 3-8B-Instruct. Across these six independent checkpoints, the mean
+parameters were sigmaleft=0.804 and sigmaright=3.471. This corresponds to a 4.32:1 ratio of
+the rightward and leftward widths. Also, all cognitive model comparison metrics were
+computed separately for each checkpoint and then averaged across the six checkpoints.
+
+Using 100 simulated trajectories generated from Provo passages (Lopes Rego et al., 2024),
+we mapped OB1’s letter-level Gaussian attention at each fixation to the relative T5-token
+positions used by ET1’s redistribution module. We evaluated skew=3, matching the released
+code, and skew=4, corresponding to OB1’s published 4:1 right-to-left asymmetry. This
+parameterization is motivated by human perceptual-span estimates of approximately 14-15
+letters to the right of fixation versus 3-4 letters to the left (Rayner 1986, 1998, as cited in
+Snell et al., 2018, p. 973).
+
+The original OB1 model limited visual input to a five-word window for computational
+efficiency (Snell et al., 2018, p. 973). In the released Provo implementation, this window is
+coded as n-1, n, n+1, n+2, n+3, where n is the fixated word. The accompanying repository
+records that the fixated word was moved to the second position of the five-word stimulus “to
+allow for longer skips (over two words).” Thus, this right-heavy support is a documented
+property of the released Provo simulation implementation, rather than a consequence of our
+redistribution procedure.
+
+We compared three unit-TRT allocation conditions: no redistribution, the asymmetric
+redistribution, and a paired symmetric control designed to remove directional asymmetry
+while preserving the learned kernel’s overall spread. For each checkpoint, the symmetric
+control used a single shared left/right scale chosen to match the asymmetric kernel’s
+token-space standard deviation on the same fixation contexts. This construction used only
+the learned kernel parameters and token-support geometry—not OB1 attention or any
+comparison metric. We set the source TRT to one so that the analysis reflected only the
+redistribution pattern, independent of ET1 predictions.
+
+At each fixation, we mapped OB1’s letter-level Gaussian attention over its five-word window
+onto ET1’s T5-token positions. We then evaluated and normalized all three conditions over
+exactly those mapped tokens. Depending on tokenization, the resulting window contained
+3–19 T5 tokens per fixation and covered pooled relative positions from -10 to +15. Because
+the released OB1–Provo window includes more words to the right, a symmetric Gaussian
+can still produce unequal pooled left or right mass after being restricted to these tokens.
+Here, symmetric refers to equal leftward and rightward Gaussian scales, not necessarily
+equal pooled mass.
+
+Because OB1 measures attention width in letters whereas ET1 redistributes TRT across T5
+tokens, we compared spatial spread only after converting OB1 attention to the same
+T5-token coordinates. Spatial spread was defined as the standard deviation of the
+normalized weights across relative T5-token positions, centered on each distribution’s own
+mean. For each checkpoint, the symmetric control was matched exactly to the
+corresponding asymmetric kernel on this measure. This preserved the overall spread while
+allowing their left–right directionality to differ. No redistribution retained all weight at the
+source token and therefore had zero spread.
+
+      Condition        Skew=3 Spearman ↑      Skew=3 JS ↓     Skew=4 Spearman ↑     Skew=4 JS ↓
+
+
+
+  No redistribution           0.4638             0.2759             0.4638             0.2759
+
+
+
+  Paired symmetric            0.9352             0.1324             0.8976             0.1553
+
+
+
+ Learned asymmetric           0.8952             0.1403             0.9098             0.1457
+
+
+
+Spearman correlation measures whether OB1 and each condition rank the relative token
+positions similarly: a high value means that positions receiving relatively high or low weight
+under OB1 tend to receive correspondingly high or low weight under the redistribution rule,
+regardless of the exact amount of weight. Jensen–Shannon (JS) divergence compares the
+complete normalized allocation shapes, including how much weight is assigned to each
+position. A JS divergence of zero indicates identical distributions, and lower values indicate
+closer correspondence with OB1.
+
+Both Gaussian conditions were closer to OB1 than no redistribution on both metrics. This
+shows that fixation-centered spatial spreading explains most of the shared structure. Under
+skew=3, the paired symmetric condition was closer to OB1 (Spearman: 0.9352 vs. 0.8952;
+JS: 0.1324 vs. 0.1403). Under the human-motivated skew=4 condition, however, the
+asymmetric kernel was closer on both metrics (Spearman: 0.9098 vs. 0.8976; JS: 0.1457 vs.
+0.1553).
+
+The differences between the two conditions are expected to be modest because, for each
+checkpoint, the paired symmetric control was constructed to match the learned asymmetric
+kernel’s overall token-space spread. The symmetric control used the same Gaussian width
+on both sides, whereas the learned kernel used separate leftward and rightward widths and
+consequently allocated more weight to the right. Their comparison therefore isolates
+left–right directionality while controlling for how broadly weight was redistributed. Crucially,
+their relative ordering reversed when OB1’s asymmetry increased from the released skew=3
+setting to the human-motivated skew=4 setting: the learned asymmetric kernel became
+closer to OB1 on both Spearman correlation and JS divergence. Because the two candidate
+kernels were matched in overall spread, this reversal supports the learned kernel’s
+directional allocation rather than a difference in candidate kernel width. It advocates
+directional consistency with OB1’s 4:1 (right-to-left) setting.
+Looking separately at the weight assigned to positions left of, at the center of, and right of
+fixation makes the skew=4 result easier to interpret. The symmetric and learned asymmetric
+conditions assigned nearly identical weight to the center (26.7% and 26.9%, respectively),
+but differed in how they distributed the remaining weight. Compared with the symmetric
+control, the asymmetric kernel reduced leftward weight from 26.7% to 11.4%, moving it
+closer to OB1’s 2.0%, while increasing rightward weight from 46.5% to 61.7%. The
+asymmetric kernel thus captures OB1’s strong rightward imbalance more clearly than the
+symmetric control, although it assigned more total weight to the right than OB1’s 43.2%. This
+overallocation partly offsets its improved correspondence on the left, explaining why its
+advantage in Spearman correlation and JS divergence under skew=4 is observed but
+modest. Accordingly, this comparison evaluates the spatial allocation component of OB1
+within its simulated fixation contexts.
+
