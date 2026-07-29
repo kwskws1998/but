@@ -68,6 +68,11 @@ def require_sha256(path: Path, expected: str) -> str:
     return actual
 
 
+def absolute_path_preserving_symlinks(path: Path) -> Path:
+    """Return an absolute path without resolving virtualenv symlinks."""
+    return path.expanduser().absolute()
+
+
 def validate_sigma_json(path: Path) -> list[dict]:
     """Require the exact ordered 12-record checkpoint configuration."""
     if not path.is_file():
@@ -182,7 +187,7 @@ def write_runner_audit(path: Path, payload: dict) -> None:
 
 def run_experiment(args: argparse.Namespace) -> dict:
     """Validate current inputs, analyze 12 pairs, and aggregate the results."""
-    python_path = args.python.expanduser().resolve()
+    python_path = absolute_path_preserving_symlinks(args.python)
     experiment_dir = args.experiment_dir.expanduser().resolve()
     processed_dir = args.processed_dir.expanduser().resolve()
     sigma_json = args.sigma_json.expanduser().resolve()

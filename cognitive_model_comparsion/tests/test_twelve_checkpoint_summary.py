@@ -65,6 +65,19 @@ def test_validate_sigma_json_rejects_nonfinite_value(tmp_path: Path) -> None:
         runner.validate_sigma_json(path)
 
 
+def test_python_path_preserves_virtualenv_symlink(tmp_path: Path) -> None:
+    """Keep the venv launcher path instead of resolving to its base Python."""
+    base_python = tmp_path / "base-python"
+    base_python.write_text("", encoding="utf-8")
+    venv_python = tmp_path / "venv-python"
+    venv_python.symlink_to(base_python)
+
+    selected = runner.absolute_path_preserving_symlinks(venv_python)
+
+    assert selected == venv_python.absolute()
+    assert selected != venv_python.resolve()
+
+
 def test_crossed_bootstrap_preserves_point_estimate() -> None:
     """Return the cell mean while resampling both crossed axes."""
     matrix = np.arange(24, dtype=float).reshape(4, 6)
