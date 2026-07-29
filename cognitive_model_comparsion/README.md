@@ -247,6 +247,29 @@ The final files are written under `final_tables_and_figures/`:
 - `llama3_8b_ob1_region_mass.png` and `.pdf`;
 - the corresponding mean-profile, regional-mass, and metric CSV files.
 
+After the runner reports `status=completed`, validate every expected artifact:
+
+```bash
+python -u \
+  cognitive_model_comparsion/scripts/package_provo_skew4_trajectory_results.py \
+  --check-only
+```
+
+Create the verification archive:
+
+```bash
+python -u \
+  cognitive_model_comparsion/scripts/package_provo_skew4_trajectory_results.py
+```
+
+The archive is written to
+`outputs/provo_rebuttal_experiment/trajectory_matched_skew3_skew4_20260729_verification.zip`.
+It contains both fixation tables and manifests, native ET1 token geometry,
+canonical Provo mapping tables, both six-checkpoint analyses, final tables and
+figures, execution logs, relevant source code, a per-file SHA-256 manifest, and
+a ZIP checksum sidecar. Worker duplicates, runtime caches, and model
+checkpoints are excluded.
+
 ### Legacy fixed-trajectory formula sensitivity
 
 The commands in this section reuse skew=3 trajectories for both attention
